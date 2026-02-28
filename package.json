@@ -1,0 +1,108 @@
+{
+  "name": "diffy",
+  "displayName": "Diffy",
+  "description": "Local coding assistant powered by git-diff RAG and Ollama. Indexes your commit history and uses it for intelligent code generation.",
+  "version": "0.1.0",
+  "publisher": "diffy",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "coding assistant",
+    "git",
+    "diff",
+    "rag",
+    "ollama",
+    "code generation"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "diffy.indexRepo",
+        "title": "Diffy: Index Current Repository"
+      },
+      {
+        "command": "diffy.askQuestion",
+        "title": "Diffy: Ask a Question"
+      },
+      {
+        "command": "diffy.status",
+        "title": "Diffy: Show Status"
+      },
+      {
+        "command": "diffy.clearIndex",
+        "title": "Diffy: Clear Index"
+      },
+      {
+        "command": "diffy.selectModel",
+        "title": "Diffy: Select Model"
+      },
+      {
+        "command": "diffy.configure",
+        "title": "Diffy: Configure"
+      }
+    ],
+    "configuration": {
+      "title": "Diffy",
+      "properties": {
+        "diffy.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Ollama API URL"
+        },
+        "diffy.model": {
+          "type": "string",
+          "default": "codellama",
+          "description": "Default Ollama model to use"
+        },
+        "diffy.webhookPort": {
+          "type": "number",
+          "default": 9417,
+          "description": "Local port for GitHub webhook receiver"
+        },
+        "diffy.maxCommits": {
+          "type": "number",
+          "default": 200,
+          "description": "Maximum number of commits to index per repository"
+        },
+        "diffy.topK": {
+          "type": "number",
+          "default": 5,
+          "description": "Number of relevant diff chunks to retrieve for each query"
+        },
+        "diffy.pythonPath": {
+          "type": "string",
+          "default": ".venv/Scripts/python.exe",
+          "description": "Path to Python interpreter (relative to extension directory or absolute)"
+        },
+        "diffy.autoIndex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically index new commits when detected"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
