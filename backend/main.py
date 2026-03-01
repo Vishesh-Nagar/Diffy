@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as cfg
 import rag_pipeline as rag
 import webhook_server as webhook
-import ollama_client as ollama
+import llm_client as llm
 import git_integration as git
 
 
@@ -141,9 +141,9 @@ def handle_list_repos(_params):
 
 
 def handle_list_models(_params):
-    """List available Ollama models."""
-    client = ollama.OllamaClient()
-    return {"models": client.list_models()}
+    """List available models from the active LLM provider."""
+    client = llm.LLMClient()
+    return {"models": client.list_models(), "provider": client.provider_name}
 
 
 def handle_clear_index(params):

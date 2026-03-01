@@ -3,4 +3,6 @@ node_modules/
 .vscode/
 .vscode-test/
 out/
-# .vscodeignore
+.vscodeignore
+.env
+__pycache__

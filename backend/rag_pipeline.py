@@ -13,7 +13,7 @@ import time
 import config as cfg
 import git_integration as git
 import vectorstore as vs
-import ollama_client as ollama
+import llm_client as llm
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +92,7 @@ class RAGPipeline:
 
     def __init__(self):
         self._store = vs.VectorStore()
-        self._ollama = ollama.OllamaClient()
+        self._llm = llm.LLMClient()
         self._repos = {}  # repo_path -> {name, last_indexed_hash, last_indexed_time}
         self._state_path = os.path.join(cfg.get("index_dir"), "pipeline_state.json")
         self._store_path = os.path.join(cfg.get("index_dir"), "vectorstore.json")
@@ -246,9 +246,9 @@ class RAGPipeline:
 
         # Call LLM
         if stream:
-            return self._ollama.generate(prompt, model=model, stream=True)
+            return self._llm.generate(prompt, model=model, stream=True)
         else:
-            return self._ollama.generate(prompt, model=model, stream=False)
+            return self._llm.generate(prompt, model=model, stream=False)
 
     def retrieve(self, question, top_k=None):
         """Retrieve relevant diffs without calling LLM."""
@@ -307,7 +307,8 @@ Provide a clear, helpful answer:"""
             },
             "total_chunks": store_stats["documents"],
             "vocabulary_size": store_stats["vocabulary_size"],
-            "ollama_available": self._ollama.is_available(),
+            "llm": self._llm.info(),
+            "llm_available": self._llm.is_available(),
         }
 
     def list_repos(self):

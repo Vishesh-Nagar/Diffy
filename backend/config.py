@@ -1,10 +1,18 @@
 """
 Diffy — Configuration Management
-Loads configuration from environment variables, config file, or defaults.
+Loads configuration from .env file, environment variables, config file, or defaults.
+
+Priority order (highest to lowest):
+  1. Environment variables (DIFFY_*)
+  2. .env file values
+  3. config.json file values
+  4. Built-in defaults
 """
 
 import os
 import json
+
+from dotenv import load_dotenv as _load_dotenv
 
 # Default configuration
 DEFAULTS = {
@@ -17,6 +25,14 @@ DEFAULTS = {
     "max_commits": 200,
     "top_k": 5,
     "chunk_max_lines": 80,
+    # Cloud LLM API keys (leave empty to use Ollama)
+    "openai_api_key": "",
+    "openai_model": "gpt-4o-mini",
+    "openai_base_url": "https://api.openai.com/v1",
+    "anthropic_api_key": "",
+    "anthropic_model": "claude-sonnet-4-20250514",
+    "gemini_api_key": "",
+    "gemini_model": "gemini-2.0-flash",
 }
 
 _config = dict(DEFAULTS)
@@ -26,8 +42,31 @@ def _config_path():
     return os.path.join(os.path.expanduser("~"), ".diffy", "config.json")
 
 
+def _find_env_file():
+    """Locate the .env file, checking backend dir and project root."""
+    # Check the directory this file lives in (backend/)
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.join(backend_dir, ".env")
+    if os.path.isfile(candidate):
+        return candidate
+
+    # Check the project root (one level up from backend/)
+    project_root = os.path.dirname(backend_dir)
+    candidate = os.path.join(project_root, ".env")
+    if os.path.isfile(candidate):
+        return candidate
+
+    return None
+
+
 def load():
-    """Load configuration from disk, merging with defaults."""
+    """Load configuration from .env file, disk config, and env vars."""
+    # --- 1. Load .env file (populates os.environ without overriding) ---
+    env_path = _find_env_file()
+    if env_path:
+        _load_dotenv(dotenv_path=env_path, override=False)
+
+    # --- 2. Load config.json from disk ---
     path = _config_path()
     if os.path.exists(path):
         try:
@@ -37,7 +76,7 @@ def load():
         except (json.JSONDecodeError, OSError):
             pass  # use defaults on error
 
-    # Environment variables override file config
+    # --- 3. Environment variables override everything else ---
     env_map = {
         "DIFFY_OLLAMA_URL": "ollama_url",
         "DIFFY_MODEL": "model",
@@ -47,6 +86,14 @@ def load():
         "DIFFY_GITHUB_TOKEN": "github_token",
         "DIFFY_MAX_COMMITS": "max_commits",
         "DIFFY_TOP_K": "top_k",
+        # Cloud LLM keys
+        "DIFFY_OPENAI_API_KEY": "openai_api_key",
+        "DIFFY_OPENAI_MODEL": "openai_model",
+        "DIFFY_OPENAI_BASE_URL": "openai_base_url",
+        "DIFFY_ANTHROPIC_API_KEY": "anthropic_api_key",
+        "DIFFY_ANTHROPIC_MODEL": "anthropic_model",
+        "DIFFY_GEMINI_API_KEY": "gemini_api_key",
+        "DIFFY_GEMINI_MODEL": "gemini_model",
     }
     for env_key, cfg_key in env_map.items():
         val = os.environ.get(env_key)
