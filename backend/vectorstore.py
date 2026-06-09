@@ -1,7 +1,6 @@
 """
 Diffy — In-House TF-IDF Vector Store
-Custom tokenizer, TF-IDF vectorizer, and cosine similarity search.
-No external dependencies — pure Python stdlib.
+Custom tokenizer, TF-IDF vectorizer, and sub-linear search using SQLite.
 """
 
 import math
@@ -9,8 +8,9 @@ import re
 import json
 import os
 import hashlib
-from collections import Counter, defaultdict
-
+import sqlite3
+import threading
+from collections import Counter
 
 # ---------------------------------------------------------------------------
 # Code-Aware Tokenizer
@@ -40,24 +40,16 @@ class Tokenizer:
 
     @staticmethod
     def tokenize(text):
-        """
-        Tokenize text into a list of normalized tokens.
-        Handles: camelCase, snake_case, path separators, operators.
-        """
         if not text:
             return []
 
-        # Replace path separators and common delimiters with spaces
         text = re.sub(r"[/\\\.,:;=<>!&|{}()\[\]\"'`~@#$%^*+?]", " ", text)
-
-        # Split on whitespace and underscores
         raw_tokens = re.split(r"[\s_\-]+", text)
 
         tokens = []
         for raw in raw_tokens:
             if not raw:
                 continue
-            # Split camelCase
             parts = _CAMEL_RE.split(raw)
             for part in parts:
                 lower = part.lower()
@@ -70,281 +62,225 @@ class Tokenizer:
 
 
 # ---------------------------------------------------------------------------
-# TF-IDF Vectorizer
-# ---------------------------------------------------------------------------
-
-class TFIDFVectorizer:
-    """
-    In-house TF-IDF vectorizer.
-    Builds vocabulary and IDF from a corpus, transforms documents into
-    sparse TF-IDF vectors (stored as {term_index: weight} dicts).
-    """
-
-    def __init__(self):
-        self.vocabulary = {}        # term -> index
-        self.idf = {}               # index -> idf weight
-        self.doc_count = 0
-        self._tokenizer = Tokenizer()
-
-    def fit(self, documents):
-        """Build vocabulary and compute IDF from a list of text documents."""
-        doc_freq = Counter()  # term -> number of documents containing it
-        self.doc_count = len(documents)
-
-        all_terms = set()
-        for doc in documents:
-            tokens = self._tokenizer.tokenize(doc)
-            unique_terms = set(tokens)
-            for term in unique_terms:
-                doc_freq[term] += 1
-            all_terms.update(unique_terms)
-
-        # Build vocabulary: assign index to each term
-        self.vocabulary = {term: idx for idx, term in enumerate(sorted(all_terms))}
-
-        # Compute IDF: log(N / df) with smoothing
-        self.idf = {}
-        for term, idx in self.vocabulary.items():
-            df = doc_freq.get(term, 0)
-            # Smooth IDF to avoid division by zero and dampen common terms
-            self.idf[idx] = math.log((self.doc_count + 1) / (df + 1)) + 1.0
-
-        return self
-
-    def transform(self, documents):
-        """Convert documents to sparse TF-IDF vectors."""
-        vectors = []
-        for doc in documents:
-            tokens = self._tokenizer.tokenize(doc)
-            tf = Counter(tokens)
-            total = len(tokens) if tokens else 1
-
-            vec = {}
-            for term, count in tf.items():
-                if term in self.vocabulary:
-                    idx = self.vocabulary[term]
-                    tf_val = count / total  # normalized term frequency
-                    idf_val = self.idf.get(idx, 1.0)
-                    vec[idx] = tf_val * idf_val
-
-            vectors.append(vec)
-        return vectors
-
-    def fit_transform(self, documents):
-        """Fit and transform in one step."""
-        self.fit(documents)
-        return self.transform(documents)
-
-    def transform_query(self, query_text):
-        """Transform a single query string into a sparse TF-IDF vector."""
-        return self.transform([query_text])[0]
-
-    def to_dict(self):
-        """Serialize to dict for JSON storage."""
-        return {
-            "vocabulary": self.vocabulary,
-            "idf": {str(k): v for k, v in self.idf.items()},
-            "doc_count": self.doc_count,
-        }
-
-    @classmethod
-    def from_dict(cls, data):
-        """Deserialize from dict."""
-        v = cls()
-        v.vocabulary = data["vocabulary"]
-        v.idf = {int(k): val for k, val in data["idf"].items()}
-        v.doc_count = data["doc_count"]
-        return v
-
-
-# ---------------------------------------------------------------------------
-# Cosine Similarity
-# ---------------------------------------------------------------------------
-
-def _magnitude(vec):
-    """Compute the magnitude (L2 norm) of a sparse vector."""
-    return math.sqrt(sum(v * v for v in vec.values())) if vec else 0.0
-
-
-def cosine_similarity(vec_a, vec_b):
-    """Compute cosine similarity between two sparse vectors (dicts)."""
-    if not vec_a or not vec_b:
-        return 0.0
-
-    # Dot product over shared keys
-    shared_keys = set(vec_a.keys()) & set(vec_b.keys())
-    if not shared_keys:
-        return 0.0
-
-    dot = sum(vec_a[k] * vec_b[k] for k in shared_keys)
-    mag_a = _magnitude(vec_a)
-    mag_b = _magnitude(vec_b)
-
-    if mag_a == 0.0 or mag_b == 0.0:
-        return 0.0
-
-    return dot / (mag_a * mag_b)
-
-
-# ---------------------------------------------------------------------------
-# Vector Store
+# Vector Store (SQLite based)
 # ---------------------------------------------------------------------------
 
 class VectorStore:
     """
-    In-house vector store with TF-IDF indexing and cosine similarity search.
+    SQLite-backed vector store with TF-IDF indexing and sub-linear search.
     Documents are stored with metadata for retrieval.
     """
 
     def __init__(self):
-        self._documents = {}          # doc_id -> {text, metadata}
-        self._vectors = {}            # doc_id -> sparse vector
-        self._vectorizer = TFIDFVectorizer()
-        self._is_fitted = False
+        self._db_path = None
+        self._local = threading.local()
+        self._lock = threading.Lock()
+        self._tokenizer = Tokenizer()
+
+    def _get_conn(self):
+        if getattr(self._local, "conn", None) is None:
+            if not self._db_path:
+                self._local.conn = sqlite3.connect(":memory:")
+            else:
+                self._local.conn = sqlite3.connect(self._db_path, timeout=30.0)
+            self._local.conn.execute("PRAGMA journal_mode=WAL")
+            self._local.conn.execute("PRAGMA synchronous=NORMAL")
+        return self._local.conn
+
+    def _init_db(self):
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute('''CREATE TABLE IF NOT EXISTS documents (
+                doc_id TEXT PRIMARY KEY,
+                text TEXT,
+                metadata TEXT,
+                total_tokens INTEGER
+            )''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS inverted_index (
+                term TEXT,
+                doc_id TEXT,
+                tf REAL,
+                PRIMARY KEY (term, doc_id),
+                FOREIGN KEY(doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE
+            )''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS global_term_df (
+                term TEXT PRIMARY KEY,
+                doc_count INTEGER
+            )''')
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_inv_doc ON inverted_index(doc_id)")
+            conn.commit()
+
+    def load(self, path):
+        """Initialize connection to the SQLite database."""
+        if path.endswith(".json"):
+            path = path[:-5] + ".db"
+        
+        with self._lock:
+            self._db_path = path
+            os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
+            self._init_db()
+        return True
+
+    def save(self, path):
+        """SQLite is auto-saved, but we keep this method for API compatibility."""
+        pass
 
     def add(self, doc_id, text, metadata=None):
-        """Add a document. After adding, call rebuild() to re-fit TF-IDF."""
-        self._documents[doc_id] = {
-            "text": text,
-            "metadata": metadata or {},
-        }
-        self._is_fitted = False
+        self.add_batch([{"id": doc_id, "text": text, "metadata": metadata or {}}])
 
     def add_batch(self, items):
-        """
-        Add multiple documents at once.
-        items: [{id, text, metadata}]
-        """
-        for item in items:
-            self._documents[item["id"]] = {
-                "text": item["text"],
-                "metadata": item.get("metadata", {}),
-            }
-        self._is_fitted = False
+        """Add multiple documents and update incremental TF-IDF."""
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            for item in items:
+                doc_id = item["id"]
+                text = item["text"]
+                metadata = json.dumps(item.get("metadata", {}))
+                
+                tokens = self._tokenizer.tokenize(text)
+                tf_counts = Counter(tokens)
+                total_tokens = len(tokens) if tokens else 1
+                
+                # Check if doc exists to properly update df
+                cursor.execute("SELECT term FROM inverted_index WHERE doc_id = ?", (doc_id,))
+                existing_terms = {row[0] for row in cursor.fetchall()}
+                
+                # Delete existing
+                if existing_terms:
+                    cursor.execute("DELETE FROM inverted_index WHERE doc_id = ?", (doc_id,))
+                    cursor.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+                    # Decrement df for existing terms
+                    for term in existing_terms:
+                        cursor.execute("UPDATE global_term_df SET doc_count = doc_count - 1 WHERE term = ?", (term,))
+                
+                # Insert document
+                cursor.execute("INSERT INTO documents (doc_id, text, metadata, total_tokens) VALUES (?, ?, ?, ?)",
+                               (doc_id, text, metadata, total_tokens))
+                
+                # Insert terms and update df
+                for term, count in tf_counts.items():
+                    tf = count / total_tokens
+                    cursor.execute("INSERT INTO inverted_index (term, doc_id, tf) VALUES (?, ?, ?)", (term, doc_id, tf))
+                    
+                    if term not in existing_terms:
+                        cursor.execute("INSERT INTO global_term_df (term, doc_count) VALUES (?, 1) ON CONFLICT(term) DO UPDATE SET doc_count = doc_count + 1", (term,))
+            
+            # Cleanup global_term_df where doc_count <= 0
+            cursor.execute("DELETE FROM global_term_df WHERE doc_count <= 0")
+            conn.commit()
 
     def rebuild(self):
-        """Re-fit the TF-IDF vectorizer on all documents and compute vectors."""
-        if not self._documents:
-            return
-
-        doc_ids = list(self._documents.keys())
-        texts = [self._documents[did]["text"] for did in doc_ids]
-
-        self._vectorizer.fit(texts)
-        vectors = self._vectorizer.transform(texts)
-
-        self._vectors = {}
-        for did, vec in zip(doc_ids, vectors):
-            self._vectors[did] = vec
-
-        self._is_fitted = True
+        """No-op for incremental SQLite implementation."""
+        pass
 
     def search(self, query, top_k=5):
-        """
-        Search for documents most similar to the query.
-        Returns: [{doc_id, score, text, metadata}]
-        """
-        if not self._is_fitted or not self._vectors:
+        """Sub-linear search using inverted index and dot product."""
+        query_tokens = self._tokenizer.tokenize(query)
+        if not query_tokens:
             return []
-
-        query_vec = self._vectorizer.transform_query(query)
-        if not query_vec:
-            return []
-
-        scores = []
-        for doc_id, doc_vec in self._vectors.items():
-            score = cosine_similarity(query_vec, doc_vec)
-            if score > 0.0:
-                scores.append((doc_id, score))
-
-        # Sort by score descending
-        scores.sort(key=lambda x: x[1], reverse=True)
-
-        results = []
-        for doc_id, score in scores[:top_k]:
-            doc = self._documents[doc_id]
-            results.append({
-                "doc_id": doc_id,
-                "score": round(score, 4),
-                "text": doc["text"],
-                "metadata": doc["metadata"],
-            })
-        return results
+            
+        query_tf = Counter(query_tokens)
+        query_total = len(query_tokens)
+        
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT COUNT(*) FROM documents")
+            doc_count = cursor.fetchone()[0]
+            if doc_count == 0:
+                return []
+                
+            placeholders = ",".join(["?"] * len(query_tf))
+            cursor.execute(f"SELECT term, doc_count FROM global_term_df WHERE term IN ({placeholders})", list(query_tf.keys()))
+            
+            combined_weights = []
+            for term, df in cursor.fetchall():
+                idf = math.log((doc_count + 1) / (df + 1)) + 1.0
+                q_tf = query_tf[term] / query_total
+                # doc_weight = doc_tf * idf
+                # query_weight = q_tf * idf
+                # dot_product = sum(query_weight * doc_weight)
+                # combined_weight = query_weight * idf = q_tf * idf * idf
+                combined_weights.append((term, q_tf * idf * idf))
+                
+            if not combined_weights:
+                return []
+                
+            cursor.execute("CREATE TEMPORARY TABLE IF NOT EXISTS temp_query_weights (term TEXT PRIMARY KEY, weight REAL)")
+            cursor.execute("DELETE FROM temp_query_weights")
+            cursor.executemany("INSERT INTO temp_query_weights (term, weight) VALUES (?, ?)", combined_weights)
+            
+            cursor.execute(f'''
+                SELECT d.doc_id, d.text, d.metadata, SUM(i.tf * q.weight) as score
+                FROM inverted_index i
+                JOIN temp_query_weights q ON i.term = q.term
+                JOIN documents d ON i.doc_id = d.doc_id
+                GROUP BY i.doc_id
+                ORDER BY score DESC
+                LIMIT ?
+            ''', (top_k,))
+            
+            results = []
+            for row in cursor.fetchall():
+                doc_id, text, metadata_str, score = row
+                results.append({
+                    "doc_id": doc_id,
+                    "score": round(score, 4),
+                    "text": text,
+                    "metadata": json.loads(metadata_str)
+                })
+            return results
 
     def remove(self, doc_id):
         """Remove a document."""
-        self._documents.pop(doc_id, None)
-        self._vectors.pop(doc_id, None)
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("SELECT term FROM inverted_index WHERE doc_id = ?", (doc_id,))
+            terms = {row[0] for row in cursor.fetchall()}
+            
+            cursor.execute("DELETE FROM inverted_index WHERE doc_id = ?", (doc_id,))
+            cursor.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+            
+            for term in terms:
+                cursor.execute("UPDATE global_term_df SET doc_count = doc_count - 1 WHERE term = ?", (term,))
+            cursor.execute("DELETE FROM global_term_df WHERE doc_count <= 0")
+            conn.commit()
 
     def clear(self):
         """Clear all documents."""
-        self._documents.clear()
-        self._vectors.clear()
-        self._is_fitted = False
-        self._vectorizer = TFIDFVectorizer()
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute("DELETE FROM inverted_index")
+            conn.execute("DELETE FROM global_term_df")
+            conn.execute("DELETE FROM documents")
+            conn.commit()
 
     def stats(self):
         """Return store statistics."""
-        return {
-            "documents": len(self._documents),
-            "vocabulary_size": len(self._vectorizer.vocabulary),
-            "is_fitted": self._is_fitted,
-        }
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM documents")
+            docs = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM global_term_df")
+            vocab = cursor.fetchone()[0]
+            return {
+                "documents": docs,
+                "vocabulary_size": vocab,
+                "is_fitted": docs > 0,
+            }
 
     def has_doc(self, doc_id):
         """Check if a document exists."""
-        return doc_id in self._documents
-
-    # ----- Persistence -----
-
-    def save(self, path):
-        """Save the vector store to a JSON file."""
-        data = {
-            "documents": {},
-            "vectorizer": self._vectorizer.to_dict() if self._is_fitted else None,
-        }
-
-        for doc_id, doc in self._documents.items():
-            data["documents"][doc_id] = {
-                "text": doc["text"],
-                "metadata": doc["metadata"],
-            }
-
-        os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-
-    def load(self, path):
-        """Load the vector store from a JSON file."""
-        if not os.path.exists(path):
-            return False
-
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return False
-
-        self._documents = {}
-        for doc_id, doc in data.get("documents", {}).items():
-            self._documents[doc_id] = {
-                "text": doc["text"],
-                "metadata": doc.get("metadata", {}),
-            }
-
-        vdata = data.get("vectorizer")
-        if vdata:
-            self._vectorizer = TFIDFVectorizer.from_dict(vdata)
-            # Recompute vectors from the loaded vectorizer
-            doc_ids = list(self._documents.keys())
-            texts = [self._documents[did]["text"] for did in doc_ids]
-            vectors = self._vectorizer.transform(texts)
-            self._vectors = dict(zip(doc_ids, vectors))
-            self._is_fitted = True
-        else:
-            self._is_fitted = False
-
-        return True
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM documents WHERE doc_id = ?", (doc_id,))
+            return cursor.fetchone() is not None
 
 
 # ---------------------------------------------------------------------------
@@ -357,35 +293,15 @@ def make_doc_id(repo_name, commit_hash, file_path, hunk_index=0):
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
-# ---------------------------------------------------------------------------
-# Self-test
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
-    print("=== Tokenizer Test ===")
-    t = Tokenizer()
-    samples = [
-        "def calculateTotalPrice(items):",
-        "function get_user_name(user_id) {",
-        "import React from 'react';",
-        "git diff --staged HEAD~1",
-    ]
-    for s in samples:
-        print(f"  {s!r}")
-        print(f"    → {t.tokenize(s)}")
-
-    print("\n=== VectorStore Test ===")
+    print("=== VectorStore SQLite Test ===")
     store = VectorStore()
-    store.add("d1", "Added new user authentication with JWT tokens")
-    store.add("d2", "Fixed bug in payment processing calculate total")
-    store.add("d3", "Refactored database connection pool settings")
-    store.add("d4", "Added unit tests for user login flow")
-    store.add("d5", "Updated CSS styles for the dashboard layout")
-    store.rebuild()
-
+    store.add("d1", "Added new user authentication with JWT tokens", {"file": "auth.ts"})
+    store.add("d2", "Fixed bug in payment processing calculate total", {"file": "payment.ts"})
+    store.add("d3", "Refactored database connection pool settings", {"file": "db.ts"})
+    
     results = store.search("user login authentication", top_k=3)
     print("  Query: 'user login authentication'")
     for r in results:
         print(f"    [{r['score']}] {r['text'][:60]}")
-
     print(f"\n  Stats: {store.stats()}")

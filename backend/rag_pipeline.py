@@ -9,6 +9,7 @@ import json
 import hashlib
 import sys
 import time
+import threading
 
 import config as cfg
 import git_integration as git
@@ -96,6 +97,7 @@ class RAGPipeline:
         self._repos = {}  # repo_path -> {name, last_indexed_hash, last_indexed_time}
         self._state_path = os.path.join(cfg.get("index_dir"), "pipeline_state.json")
         self._store_path = os.path.join(cfg.get("index_dir"), "vectorstore.json")
+        self._lock = threading.Lock()
         self._load_state()
 
     # ----- State Management -----
@@ -122,6 +124,7 @@ class RAGPipeline:
         with open(self._state_path, "w", encoding="utf-8") as f:
             json.dump(state, f)
 
+        # VectorStore auto-saves to SQLite, but we call save for API compat
         self._store.save(self._store_path)
 
     # ----- Indexing -----
@@ -139,7 +142,8 @@ class RAGPipeline:
         abs_path = os.path.abspath(repo_path)
 
         # Check what we've already indexed
-        repo_state = self._repos.get(abs_path, {})
+        with self._lock:
+            repo_state = self._repos.get(abs_path, {})
         last_hash = repo_state.get("last_indexed_hash", "") if not force else ""
 
         # Get commits
@@ -179,13 +183,14 @@ class RAGPipeline:
             self._store.rebuild()
 
         # Update repo state
-        self._repos[abs_path] = {
-            "name": repo_name,
-            "last_indexed_hash": commits[0]["hash"],
-            "last_indexed_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "remote": repo_info["remote"],
-        }
-        self._save_state()
+        with self._lock:
+            self._repos[abs_path] = {
+                "name": repo_name,
+                "last_indexed_hash": commits[0]["hash"],
+                "last_indexed_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "remote": repo_info["remote"],
+            }
+            self._save_state()
 
         return {
             "status": "ok",
@@ -224,7 +229,8 @@ class RAGPipeline:
         if all_items:
             self._store.add_batch(all_items)
             self._store.rebuild()
-            self._save_state()
+            with self._lock:
+                self._save_state()
 
         return {"status": "ok", "chunks_added": len(all_items)}
 
@@ -324,15 +330,16 @@ Provide a clear, helpful answer:"""
 
     def clear_index(self, repo_path=None):
         """Clear index for a specific repo or all repos."""
-        if repo_path:
-            abs_path = os.path.abspath(repo_path)
-            self._repos.pop(abs_path, None)
-            # Note: individual doc removal would require iterating;
-            # for simplicity, we rebuild from remaining repos
-        else:
-            self._repos.clear()
-            self._store.clear()
-        self._save_state()
+        with self._lock:
+            if repo_path:
+                abs_path = os.path.abspath(repo_path)
+                self._repos.pop(abs_path, None)
+                # Note: individual doc removal would require iterating;
+                # for simplicity, we rebuild from remaining repos
+            else:
+                self._repos.clear()
+                self._store.clear()
+            self._save_state()
         return {"status": "ok"}
 
 

@@ -56,8 +56,10 @@ def handle_index(params):
     repo_path = params.get("repoPath", "")
     force = params.get("force", False)
 
-    if not repo_path:
-        return {"status": "error", "message": "repoPath is required"}
+    if not isinstance(repo_path, str) or not repo_path:
+        return {"status": "error", "message": "repoPath must be a non-empty string"}
+    if not isinstance(force, bool):
+        return {"status": "error", "message": "force must be a boolean"}
 
     pipeline = rag.get_pipeline()
     return pipeline.index_repository(repo_path, force=force)
@@ -69,8 +71,14 @@ def handle_query(params):
     top_k = params.get("topK", None)
     model = params.get("model", None)
 
-    if not question:
-        return {"status": "error", "message": "question is required"}
+    if not isinstance(question, str) or not question:
+        return {"status": "error", "message": "question must be a non-empty string"}
+    if len(question) > 2000:
+        return {"status": "error", "message": "question too long (max 2000 chars)"}
+    if top_k is not None and (not isinstance(top_k, int) or top_k < 1 or top_k > 50):
+        return {"status": "error", "message": "topK must be an integer between 1 and 50"}
+    if model is not None and not isinstance(model, str):
+        return {"status": "error", "message": "model must be a string"}
 
     pipeline = rag.get_pipeline()
     response = pipeline.query(question, top_k=top_k, model=model, stream=False)
@@ -83,9 +91,18 @@ def handle_query_stream(params, req_id):
     top_k = params.get("topK", None)
     model = params.get("model", None)
 
-    if not question:
-        _send_response(req_id, error="question is required")
-        return None  # signal that we already sent a response
+    if not isinstance(question, str) or not question:
+        _send_response(req_id, error="question must be a non-empty string")
+        return None
+    if len(question) > 2000:
+        _send_response(req_id, error="question too long (max 2000 chars)")
+        return None
+    if top_k is not None and (not isinstance(top_k, int) or top_k < 1 or top_k > 50):
+        _send_response(req_id, error="topK must be an integer between 1 and 50")
+        return None
+    if model is not None and not isinstance(model, str):
+        _send_response(req_id, error="model must be a string")
+        return None
 
     pipeline = rag.get_pipeline()
 
@@ -120,6 +137,13 @@ def handle_retrieve(params):
     """Retrieve relevant diffs without calling LLM."""
     question = params.get("question", "")
     top_k = params.get("topK", 5)
+
+    if not isinstance(question, str) or not question:
+        return {"status": "error", "message": "question must be a non-empty string"}
+    if len(question) > 2000:
+        return {"status": "error", "message": "question too long (max 2000 chars)"}
+    if not isinstance(top_k, int) or top_k < 1 or top_k > 50:
+        return {"status": "error", "message": "topK must be an integer between 1 and 50"}
 
     pipeline = rag.get_pipeline()
     results = pipeline.retrieve(question, top_k=top_k)

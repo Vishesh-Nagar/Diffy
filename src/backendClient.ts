@@ -17,7 +17,6 @@ export interface RpcResponse {
     params?: any;
 }
 
-type NotificationHandler = (method: string, params: any) => void;
 
 export class BackendClient {
     private process: cp.ChildProcess | null = null;
@@ -27,19 +26,13 @@ export class BackendClient {
         reject: (reason: any) => void;
     }>();
     private buffer = '';
-    private onNotification: NotificationHandler | null = null;
+    public readonly onNotificationEvent = new vscode.EventEmitter<{method: string, params: any}>();
     private outputChannel: vscode.OutputChannel;
 
     constructor(private context: vscode.ExtensionContext) {
         this.outputChannel = vscode.window.createOutputChannel('Diffy Backend');
     }
 
-    /**
-     * Set handler for server-initiated notifications (streaming, webhook events).
-     */
-    setNotificationHandler(handler: NotificationHandler): void {
-        this.onNotification = handler;
-    }
 
     /**
      * Start the Python backend process.
@@ -125,19 +118,16 @@ export class BackendClient {
                     resolve(true);
                 }, 10000);
 
-                const originalHandler = this.onNotification;
-                this.onNotification = (method, params) => {
-                    if (method === 'ready') {
+                const disposable = this.onNotificationEvent.event((msg) => {
+                    if (msg.method === 'ready') {
                         clearTimeout(readyTimeout);
                         this.outputChannel.appendLine(
-                            `Backend ready (v${params?.version}, webhook port ${params?.webhook_port})`
+                            `Backend ready (v${msg.params?.version}, webhook port ${msg.params?.webhook_port})`
                         );
-                        this.onNotification = originalHandler;
+                        disposable.dispose();
                         resolve(true);
-                    } else if (originalHandler) {
-                        originalHandler(method, params);
                     }
-                };
+                });
 
             } catch (err: any) {
                 this.outputChannel.appendLine(`Failed to start backend: ${err.message}`);
@@ -218,9 +208,7 @@ export class BackendClient {
                 }
                 // Is it a notification (has method, no id)?
                 else if (msg.method) {
-                    if (this.onNotification) {
-                        this.onNotification(msg.method, msg.params || {});
-                    }
+                    this.onNotificationEvent.fire({ method: msg.method, params: msg.params || {} });
                 }
             } catch {
                 this.outputChannel.appendLine(`[parse error] ${trimmed.substring(0, 200)}`);

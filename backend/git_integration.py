@@ -20,9 +20,23 @@ import config as cfg
 # Local Git (subprocess)
 # ---------------------------------------------------------------------------
 
+def _validate_repo_path(repo_path):
+    """Validate that the given path is a directory containing a .git folder."""
+    if not repo_path:
+        return False
+    try:
+        abs_path = os.path.abspath(repo_path)
+        git_dir = os.path.join(abs_path, ".git")
+        return os.path.isdir(git_dir)
+    except Exception:
+        return False
+
+
 def _run_git(repo_path, *args):
     """Run a git command and return stdout."""
-    cmd = ["git", "-C", repo_path] + list(args)
+    if not _validate_repo_path(repo_path):
+        return None
+    cmd = ["git", "-C", os.path.abspath(repo_path)] + list(args)
     try:
         result = subprocess.run(
             cmd,

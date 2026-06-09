@@ -11,6 +11,7 @@ Priority order (highest to lowest):
 
 import os
 import json
+import urllib.parse
 
 from dotenv import load_dotenv as _load_dotenv
 
@@ -115,8 +116,13 @@ def save():
     """Persist current configuration to disk."""
     path = _config_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    
+    # Strip out sensitive keys
+    sensitive_keys = {"github_token", "openai_api_key", "anthropic_api_key", "gemini_api_key", "webhook_secret"}
+    safe_config = {k: v for k, v in _config.items() if k not in sensitive_keys}
+
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(_config, f, indent=2)
+        json.dump(safe_config, f, indent=2)
 
 
 def get(key, default=None):
@@ -124,14 +130,46 @@ def get(key, default=None):
     return _config.get(key, default)
 
 
+def _is_valid_url(url):
+    try:
+        result = urllib.parse.urlparse(url)
+        return all([result.scheme in ("http", "https"), result.netloc])
+    except Exception:
+        return False
+
+
+def _sanitize_and_whitelist(key, value):
+    if key not in DEFAULTS:
+        raise ValueError(f"Invalid configuration key: {key}")
+    
+    if key in ("ollama_url", "openai_base_url"):
+        if not _is_valid_url(value):
+            raise ValueError(f"Invalid URL for {key}: {value}")
+            
+    return value
+
+
 def set_val(key, value):
     """Set a configuration value (in memory)."""
-    _config[key] = value
+    try:
+        value = _sanitize_and_whitelist(key, value)
+        _config[key] = value
+    except ValueError as e:
+        import sys
+        print(f"Warning: {e}", file=sys.stderr)
 
 
 def update(patch: dict):
     """Update multiple config values and save."""
-    _config.update(patch)
+    valid_patch = {}
+    for k, v in patch.items():
+        try:
+            valid_patch[k] = _sanitize_and_whitelist(k, v)
+        except ValueError as e:
+            import sys
+            print(f"Warning: {e}", file=sys.stderr)
+            
+    _config.update(valid_patch)
     save()
 
 

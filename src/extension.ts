@@ -125,9 +125,9 @@ async function cmdAskQuestion() {
     try {
         // Set up streaming notification handler
         let streamedText = '';
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
 
-        backend.setNotificationHandler((method, params) => {
+        const disposable = backend.onNotificationEvent.event((msg) => {
+            const { method, params } = msg;
             if (method === 'stream/context') {
                 outputChannel.appendLine('\n📚 Relevant code changes found:');
                 for (const ctx of (params.context || [])) {
@@ -144,9 +144,11 @@ async function cmdAskQuestion() {
                 outputChannel.appendLine(`\n🤖 Diffy:\n${streamedText}`);
                 outputChannel.appendLine(`\n${'─'.repeat(60)}\n`);
                 statusBarItem.text = '$(rocket) Diffy ✓';
+                disposable.dispose();
             } else if (method === 'stream/error') {
                 outputChannel.appendLine(`\n❌ Error: ${params.error}`);
                 statusBarItem.text = '$(rocket) Diffy ✓';
+                disposable.dispose();
             }
         });
 
@@ -341,11 +343,10 @@ async function cmdConfigure() {
         });
         if (url) { await backend.setConfig({ ollama_url: url }); }
     } else if (picked.label.includes('GitHub Token')) {
-        const token = await vscode.window.showInputBox({
-            prompt: 'GitHub Personal Access Token',
-            password: true,
-        });
-        if (token) { await backend.setConfig({ github_token: token }); }
+        vscode.window.showInformationMessage(
+            'For security, please set your DIFFY_GITHUB_TOKEN in a local .env file in your project or Diffy backend directory, then restart the extension.',
+            { modal: true }
+        );
     } else if (picked.label.includes('Webhook Port')) {
         const port = await vscode.window.showInputBox({
             prompt: 'Webhook receiver port',

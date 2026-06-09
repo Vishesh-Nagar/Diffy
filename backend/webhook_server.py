@@ -32,7 +32,7 @@ def set_push_callback(callback):
 def _verify_signature(payload_body, signature_header, secret):
     """Verify GitHub webhook HMAC-SHA256 signature."""
     if not secret:
-        return True  # no secret configured, skip verification
+        return False  # secret must be configured
 
     if not signature_header:
         return False
