@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { BackendClient } from '../backendClient';
+import { ServerClient } from '../serverClient';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'diffy.chatView';
@@ -7,7 +7,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
-        private readonly _backend: BackendClient
+        private readonly _server: ServerClient
     ) {}
 
     public resolveWebviewView(
@@ -60,7 +60,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._view.webview.postMessage({ type: 'addMessage', role: 'assistant', content: '' });
 
         try {
-            const disposable = this._backend.onNotificationEvent.event((msg) => {
+            const disposable = this._server.onNotificationEvent.event((msg) => {
                 const { method, params } = msg;
                 if (method === 'stream/context') {
                     this._view?.webview.postMessage({ type: 'context', context: params.context || [] });
@@ -77,7 +77,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 }
             });
 
-            await this._backend.queryStream(question);
+            await this._server.queryStream(question);
         } catch (err: any) {
             this._view.webview.postMessage({ type: 'error', error: err.message });
             this._view.webview.postMessage({ type: 'setLoading', loading: false });

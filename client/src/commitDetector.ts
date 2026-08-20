@@ -10,7 +10,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { BackendClient } from './backendClient';
+import { ServerClient } from './serverClient';
 
 // Git Extension API types (simplified)
 interface GitRepository {
@@ -34,13 +34,13 @@ export class CommitDetector {
         lastHash: string;
         watcher?: vscode.FileSystemWatcher;
     }>();
-    private backend: BackendClient;
+    private server: ServerClient;
     private throttleTimers = new Map<string, NodeJS.Timeout>();
     private outputChannel: vscode.OutputChannel;
 
     /**
      * Tracks repos where the user has granted hook-installation consent.
-     * Stored in memory only — consent is re-requested on each session (TODO #12).
+     * Stored in memory only — consent is re-requested on each session.
      */
     private _hookConsent = new Set<string>();
 
@@ -62,8 +62,8 @@ export class CommitDetector {
     }>();
     public readonly onNewCommits = this._onNewCommits.event;
 
-    constructor(backend: BackendClient, outputChannel: vscode.OutputChannel) {
-        this.backend = backend;
+    constructor(backend: ServerClient, outputChannel: vscode.OutputChannel) {
+        this.server = backend;
         this.outputChannel = outputChannel;
     }
 
@@ -180,7 +180,7 @@ export class CommitDetector {
     /**
      * Prompt the user for consent once per repo, then install signal-file hooks.
      * Records every file write so restoreGitHooks() can undo the changes exactly.
-     * Fixes TODO #12 — previously wrote hooks silently with no cleanup.
+     * Records every file write so restoreGitHooks() can undo the changes exactly.
      */
     private async installGitHooks(repoPath: string): Promise<vscode.FileSystemWatcher | undefined> {
         const gitDir = path.join(repoPath, '.git');
@@ -310,9 +310,9 @@ export class CommitDetector {
 
     private initWebhookLayer(): void {
         // Subscribe to backend notifications using the correct EventEmitter API.
-        // setNotificationHandler() was never defined on BackendClient \u2014 this
+        // setNotificationHandler() was never defined on ServerClient \u2014 this
         // uses onNotificationEvent which is the actual pub-sub mechanism.
-        const sub = this.backend.onNotificationEvent.event(({ method, params }) => {
+        const sub = this.server.onNotificationEvent.event(({ method, params }) => {
             if (method === 'webhook/indexed') {
                 this.outputChannel.appendLine(
                     `Webhook: indexed ${params.commits_indexed} commits from ${params.repo}`

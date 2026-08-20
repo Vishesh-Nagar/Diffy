@@ -16,7 +16,7 @@ Diffy indexes your repository's commit diffs and live workspace files, builds a 
 - **AI Code Review** — Run an AI review of your last N commits with full Markdown output
 - **Event-driven auto-indexing** — Detects new commits via VS Code Git API, git hooks, and GitHub webhooks
 - **Multi-provider LLM** — Uses Ollama locally, or set an API key for OpenAI, Anthropic, or Gemini
-- **Zero mandatory pip dependencies** — Core Python backend uses only the standard library
+- **Zero mandatory pip dependencies** — Core Python server uses only the standard library
 
 ## Prerequisites
 
@@ -65,14 +65,14 @@ source .venv/bin/activate
 pip install python-dotenv
 ```
 
-> **Note:** `python-dotenv` is the only required package. The rest of the backend uses Python's standard library.
+> **Note:** `python-dotenv` is the only required package. The rest of the server uses Python's standard library.
 
 ### 3. Configure environment (optional)
 
 Copy the example env file and fill in any values you need:
 
 ```bash
-cp .env.example backend/.env
+cp .env.example server/.env
 ```
 
 Key variables in `.env`:
@@ -106,7 +106,7 @@ On macOS/Linux:
 Press F5 in VS Code
 ```
 
-A new VS Code window opens with Diffy active. The rocket icon `🚀 Diffy ✓` will appear in the status bar when the backend connects successfully.
+A new VS Code window opens with Diffy active. The rocket icon `🚀 Diffy ✓` will appear in the status bar when the server connects successfully.
 
 ---
 
@@ -186,7 +186,7 @@ All settings are available under `Diffy` in VS Code Settings (`Ctrl+,`):
 ```
 VS Code Extension (TypeScript)
 ├── extension.ts              Entry point, command registration, auto-index
-├── backendClient.ts          Python process manager (JSON-RPC over stdin/stdout)
+├── serverClient.ts          Python process manager (JSON-RPC over stdin/stdout)
 ├── commitDetector.ts         Event-driven commit detection (Git API + hooks)
 ├── providers/
 │   ├── chatViewProvider.ts   Streaming chat sidebar with loading state
@@ -196,7 +196,7 @@ VS Code Extension (TypeScript)
     ├── showDiff.ts           Native VS Code diff viewer (diffy-git: URI scheme)
     └── reviewCommit.ts       AI code review panel with Markdown rendering
 
-Python Backend (stdlib + python-dotenv)
+Python Server (stdlib + python-dotenv)
 ├── main.py                   JSON-RPC dispatcher (stdin/stdout)
 ├── rag_pipeline.py           RAG orchestrator: index, retrieve, query, review
 ├── vectorstore.py            Hybrid TF-IDF + cosine similarity (SQLite)
@@ -217,8 +217,8 @@ Python Backend (stdlib + python-dotenv)
 
 ## Troubleshooting
 
-**`🚀 Diffy ✗` in the status bar** — The Python backend failed to start.
-- Check the **Diffy Backend** output channel for details.
+**`🚀 Diffy ✗` in the status bar** — The Python server failed to start.
+- Check the **Diffy Server** output channel for details.
 - Make sure `diffy.pythonPath` points to your `.venv` Python.
 - Verify `python-dotenv` is installed: `.venv/Scripts/pip install python-dotenv`
 

@@ -9,6 +9,9 @@
         "kind": "build",
         "isDefault": true
       },
+      "options": {
+        "cwd": "${workspaceFolder}/client"
+      },
       "presentation": {
         "reveal": "silent",
         "panel": "shared"
@@ -21,6 +24,9 @@
       "script": "watch",
       "group": "build",
       "isBackground": true,
+      "options": {
+        "cwd": "${workspaceFolder}/client"
+      },
       "presentation": {
         "reveal": "silent",
         "panel": "shared"

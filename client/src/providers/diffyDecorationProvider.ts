@@ -1,15 +1,15 @@
 import * as vscode from 'vscode';
-import { BackendClient } from '../backendClient';
+import { ServerClient } from '../serverClient';
 
 export class DiffyDecorationProvider implements vscode.Disposable {
     private decorationType: vscode.TextEditorDecorationType;
-    private _backend: BackendClient;
+    private _server: ServerClient;
     private _disposables: vscode.Disposable[] = [];
     private _debounceTimer: ReturnType<typeof setTimeout> | undefined;
     private static readonly DEBOUNCE_MS = 2000;
 
-    constructor(backend: BackendClient) {
-        this._backend = backend;
+    constructor(backend: ServerClient) {
+        this._server = backend;
 
         this.decorationType = vscode.window.createTextEditorDecorationType({
             backgroundColor: 'rgba(100, 200, 100, 0.1)',
@@ -65,7 +65,7 @@ export class DiffyDecorationProvider implements vscode.Disposable {
             const repoPath = workspaceFolder.uri.fsPath;
             const filePath = vscode.workspace.asRelativePath(editor.document.uri, false);
 
-            const result = await this._backend.getRecentModifications(repoPath, filePath, 10);
+            const result = await this._server.getRecentModifications(repoPath, filePath, 10);
             if (result && result.status === 'ok' && Array.isArray(result.lines)) {
                 for (const line of result.lines) {
                     if (line > 0 && line <= editor.document.lineCount) {

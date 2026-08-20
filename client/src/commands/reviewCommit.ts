@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
-import { BackendClient } from '../backendClient';
+import { ServerClient } from '../serverClient';
 
-export async function cmdReviewCommit(backend: BackendClient) {
+export async function cmdReviewCommit(server: ServerClient) {
     const folders = vscode.workspace.workspaceFolders;
     let repoPath: string | undefined;
 
@@ -39,7 +39,7 @@ export async function cmdReviewCommit(backend: BackendClient) {
         cancellable: false
     }, async (progress) => {
         try {
-            const result = await backend.reviewCommits(repoPath!, numCommits);
+            const result = await server.reviewCommits(repoPath!, numCommits);
             
             if (result.status === 'ok') {
                 const panel = vscode.window.createWebviewPanel(

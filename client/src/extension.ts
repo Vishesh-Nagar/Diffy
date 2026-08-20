@@ -5,7 +5,7 @@
  */
 
 import * as vscode from 'vscode';
-import { BackendClient } from './backendClient';
+import { ServerClient } from './serverClient';
 import { CommitDetector } from './commitDetector';
 import { ChatViewProvider } from './providers/chatViewProvider';
 import { DiffyCodeLensProvider } from './providers/diffyCodeLensProvider';
@@ -17,7 +17,7 @@ interface ConfigOption extends vscode.QuickPickItem {
     action?: string;
 }
 
-let backend: BackendClient;
+let server: ServerClient;
 let commitDetector: CommitDetector;
 let outputChannel: vscode.OutputChannel;
 let statusBarItem: vscode.StatusBarItem;
@@ -35,8 +35,8 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(statusBarItem);
 
     // Start backend
-    backend = new BackendClient(context);
-    const started = await backend.start();
+    server = new ServerClient(context);
+    const started = await server.start();
     if (started) {
         outputChannel.appendLine('Backend started successfully');
         statusBarItem.text = '$(rocket) Diffy ✓';
@@ -49,7 +49,7 @@ export async function activate(context: vscode.ExtensionContext) {
     }
 
     // Start commit detector
-    commitDetector = new CommitDetector(backend, outputChannel);
+    commitDetector = new CommitDetector(server, outputChannel);
     await commitDetector.activate();
 
     // Auto-index on new commits
@@ -58,7 +58,7 @@ export async function activate(context: vscode.ExtensionContext) {
         commitDetector.onNewCommits(async ({ repoPath, source }) => {
             outputChannel.appendLine(`Auto-indexing ${repoPath} (triggered by ${source})`);
             try {
-                const result = await backend.index(repoPath);
+                const result = await server.index(repoPath);
                 if (result.chunks_added > 0) {
                     statusBarItem.text = `$(rocket) Diffy (+${result.chunks_added})`;
                     setTimeout(() => { statusBarItem.text = '$(rocket) Diffy ✓'; }, 3000);
@@ -81,7 +81,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 const filePath = vscode.workspace.asRelativePath(document.uri, false);
                 const content = document.getText();
                 try {
-                    await backend.indexFile(repoPath, filePath, content);
+                    await server.indexFile(repoPath, filePath, content);
                     statusBarItem.text = `$(rocket) Diffy ✓`;
                 } catch (err: any) {
                     outputChannel.appendLine(`File index error: ${err.message}`);
@@ -91,7 +91,7 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     // Register Webview Provider
-    const chatProvider = new ChatViewProvider(context.extensionUri, backend);
+    const chatProvider = new ChatViewProvider(context.extensionUri, server);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider)
     );
@@ -102,7 +102,7 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.languages.registerCodeLensProvider({ scheme: 'file' }, codeLensProvider)
     );
 
-    const decorationProvider = new DiffyDecorationProvider(backend);
+    const decorationProvider = new DiffyDecorationProvider(server);
     context.subscriptions.push(decorationProvider);
     
     // ---- Register Commands ----
@@ -111,7 +111,7 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('diffy.askQuestion', cmdAskQuestion),
         vscode.commands.registerCommand('diffy.askQuestionContext', (uri, range, symbolName) => cmdAskQuestionContext(uri, range, symbolName, chatProvider)),
         vscode.commands.registerCommand('diffy.showDiff', cmdShowDiff),
-        vscode.commands.registerCommand('diffy.reviewCommit', () => cmdReviewCommit(backend)),
+        vscode.commands.registerCommand('diffy.reviewCommit', () => cmdReviewCommit(server)),
         vscode.commands.registerCommand('diffy.indexRepo', cmdIndexRepo),
         vscode.commands.registerCommand('diffy.status', cmdStatus),
         vscode.commands.registerCommand('diffy.clearIndex', cmdClearIndex),
@@ -126,7 +126,7 @@ export async function activate(context: vscode.ExtensionContext) {
         for (const folder of vscode.workspace.workspaceFolders) {
             try {
                 outputChannel.appendLine(`Initial indexing: ${folder.uri.fsPath}`);
-                const result = await backend.index(folder.uri.fsPath);
+                const result = await server.index(folder.uri.fsPath);
                 outputChannel.appendLine(
                     `  → ${result.commits_indexed} commits, ${result.chunks_added} chunks`
                 );
@@ -139,7 +139,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {
     commitDetector?.deactivate();
-    backend?.stop();
+    server?.stop();
     outputChannel?.appendLine('Diffy deactivated');
 }
 
@@ -195,7 +195,7 @@ async function cmdIndexRepo() {
     outputChannel.appendLine(`\nIndexing: ${repoPath}`);
 
     try {
-        const result = await backend.index(repoPath, true);
+        const result = await server.index(repoPath, true);
         outputChannel.appendLine(
             `✅ Indexed ${result.commits_indexed} commits, ${result.chunks_added} chunks`
         );
@@ -216,7 +216,7 @@ async function cmdIndexRepo() {
 
 async function cmdStatus() {
     try {
-        const status = await backend.status();
+        const status = await server.status();
         outputChannel.show(true);
         outputChannel.appendLine(`\n${'═'.repeat(40)}`);
         outputChannel.appendLine('📊 Diffy Status');
@@ -254,7 +254,7 @@ async function cmdClearIndex() {
     if (confirm !== 'Clear All') { return; }
 
     try {
-        await backend.clearIndex();
+        await server.clearIndex();
         vscode.window.showInformationMessage('Diffy: Index cleared');
         outputChannel.appendLine('Index cleared');
     } catch (err: any) {
@@ -268,7 +268,7 @@ async function cmdClearIndex() {
 
 async function cmdSelectModel() {
     try {
-        const result = await backend.listModels();
+        const result = await server.listModels();
         const models = result.models || [];
 
         if (models.length === 0) {
@@ -287,7 +287,7 @@ async function cmdSelectModel() {
         });
 
         if (picked) {
-            await backend.setConfig({ model: picked.label });
+            await server.setConfig({ model: picked.label });
             vscode.window.showInformationMessage(`Diffy: Model set to ${picked.label}`);
         }
     } catch (err: any) {
@@ -329,7 +329,7 @@ async function cmdConfigure() {
             prompt: 'Ollama API URL',
             value: 'http://localhost:11434',
         });
-        if (url) { await backend.setConfig({ ollama_url: url }); }
+        if (url) { await server.setConfig({ ollama_url: url }); }
     } else if (picked.label.includes('GitHub Token')) {
         vscode.window.showInformationMessage(
             'For security, please set your DIFFY_GITHUB_TOKEN in a local .env file in your project or Diffy backend directory, then restart the extension.',
@@ -340,12 +340,12 @@ async function cmdConfigure() {
             prompt: 'Webhook receiver port',
             value: '9417',
         });
-        if (port) { await backend.setConfig({ webhook_port: parseInt(port) }); }
+        if (port) { await server.setConfig({ webhook_port: parseInt(port) }); }
     } else if (picked.label.includes('Max Commits')) {
         const max = await vscode.window.showInputBox({
             prompt: 'Max commits to index per repository',
             value: '200',
         });
-        if (max) { await backend.setConfig({ max_commits: parseInt(max) }); }
+        if (max) { await server.setConfig({ max_commits: parseInt(max) }); }
     }
 }

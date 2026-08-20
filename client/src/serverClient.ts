@@ -1,5 +1,5 @@
 /**
- * Diffy — Backend Client
+ * Diffy — Server Client
  * Spawns the Python backend as a child process and communicates
  * via JSON-RPC over stdin/stdout.
  */
@@ -18,7 +18,7 @@ export interface RpcResponse {
 }
 
 
-export class BackendClient {
+export class ServerClient {
     private process: cp.ChildProcess | null = null;
     private requestId = 0;
     private pendingRequests = new Map<number, {
@@ -30,7 +30,7 @@ export class BackendClient {
     private outputChannel: vscode.OutputChannel;
 
     constructor(private context: vscode.ExtensionContext) {
-        this.outputChannel = vscode.window.createOutputChannel('Diffy Backend');
+        this.outputChannel = vscode.window.createOutputChannel('Diffy Server');
     }
 
 
@@ -44,8 +44,8 @@ export class BackendClient {
 
         const config = vscode.workspace.getConfiguration('diffy');
         let pythonPath = config.get<string>('pythonPath', '.venv/Scripts/python.exe');
-        const backendDir = path.join(this.context.extensionPath, 'backend');
-        const mainScript = path.join(backendDir, 'main.py');
+        const serverDir = path.join(this.context.extensionPath, '..', 'server');
+        const mainScript = path.join(serverDir, 'main.py');
 
         // Resolve relative python path against extension directory
         if (!path.isAbsolute(pythonPath)) {
@@ -68,7 +68,7 @@ export class BackendClient {
         return new Promise((resolve) => {
             try {
                 this.process = cp.spawn(pythonPath, [mainScript], {
-                    cwd: backendDir,
+                    cwd: serverDir,
                     stdio: ['pipe', 'pipe', 'pipe'],
                     env: {
                         ...process.env,
@@ -131,7 +131,7 @@ export class BackendClient {
                 });
 
             } catch (err: any) {
-                this.outputChannel.appendLine(`Failed to start backend: ${err.message}`);
+                this.outputChannel.appendLine(`Failed to start server: ${err.message}`);
                 resolve(false);
             }
         });

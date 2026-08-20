@@ -183,7 +183,7 @@ def handle_clear_index(params):
 
 
 def handle_set_config(params):
-    """Update configuration — only whitelisted keys accepted (fixes TODO #4).
+    """Update configuration — only whitelisted keys accepted.
 
     Rejects:
     - Unknown keys (dropped with a stderr warning)

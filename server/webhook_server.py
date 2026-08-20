@@ -92,7 +92,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             event_data = self._parse_push(payload)
             if _on_push_callback and event_data:
                 # Submit to bounded pool instead of spawning an unlimited thread
-                # (fixes TODO #13 — prevents thread exhaustion under webhook floods)
+                # (prevents thread exhaustion under webhook floods)
                 _executor.submit(_on_push_callback, event_data)
 
         # Handle ping (webhook setup verification)
@@ -152,7 +152,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
 _server = None
 _thread = None
 # Bounded thread pool: caps concurrent webhook processing at 4 workers.
-# Excess requests queue rather than spawning unlimited threads (fixes TODO #13).
+# Excess requests queue rather than spawning unlimited threads.
 _executor = ThreadPoolExecutor(max_workers=4)
 
 
