@@ -38,6 +38,23 @@ export class CommitDetector {
     private throttleTimers = new Map<string, NodeJS.Timeout>();
     private outputChannel: vscode.OutputChannel;
 
+    /**
+     * Tracks repos where the user has granted hook-installation consent.
+     * Stored in memory only — consent is re-requested on each session (TODO #12).
+     */
+    private _hookConsent = new Set<string>();
+
+    /**
+     * Maps repoPath → list of restoration actions to undo hook changes on deactivate.
+     * Each action is either:
+     *   { kind: 'delete', hookPath }           — we created the file, delete it
+     *   { kind: 'strip', hookPath, appendLine } — we appended a line, strip it
+     */
+    private _hookRestoreMap = new Map<string, Array<
+        | { kind: 'delete'; hookPath: string }
+        | { kind: 'strip'; hookPath: string; appendLine: string }
+    >>();
+
     // Event emitter for new commits
     private _onNewCommits = new vscode.EventEmitter<{
         repoPath: string;
@@ -62,12 +79,13 @@ export class CommitDetector {
     }
 
     /**
-     * Clean up all watchers and listeners.
+     * Clean up all watchers, listeners, and restore any modified git hooks.
      */
     deactivate(): void {
         for (const d of this.disposables) { d.dispose(); }
-        for (const [, info] of this.trackedRepos) {
+        for (const [repoPath, info] of this.trackedRepos) {
             info.watcher?.dispose();
+            this.restoreGitHooks(repoPath);
         }
         this.trackedRepos.clear();
         this._onNewCommits.dispose();
@@ -116,7 +134,7 @@ export class CommitDetector {
         }
     }
 
-    private trackRepository(repo: GitRepository): void {
+    private async trackRepository(repo: GitRepository): Promise<void> {
         const repoPath = repo.rootUri.fsPath;
 
         if (this.trackedRepos.has(repoPath)) { return; }
@@ -135,8 +153,8 @@ export class CommitDetector {
         });
         this.disposables.push(stateSub);
 
-        // Layer 2: install git hooks and watch signal file
-        const watcher = this.installGitHooks(repoPath);
+        // Layer 2: request consent then install git hooks
+        const watcher = await this.installGitHooks(repoPath);
 
         this.trackedRepos.set(repoPath, {
             lastHash: currentHash,
@@ -150,6 +168,7 @@ export class CommitDetector {
         const info = this.trackedRepos.get(repoPath);
         if (info) {
             info.watcher?.dispose();
+            this.restoreGitHooks(repoPath);
             this.trackedRepos.delete(repoPath);
         }
     }
@@ -158,10 +177,34 @@ export class CommitDetector {
     // Layer 2: Git Hooks + Signal File
     // ---------------------------------------------------------------
 
-    private installGitHooks(repoPath: string): vscode.FileSystemWatcher | undefined {
+    /**
+     * Prompt the user for consent once per repo, then install signal-file hooks.
+     * Records every file write so restoreGitHooks() can undo the changes exactly.
+     * Fixes TODO #12 — previously wrote hooks silently with no cleanup.
+     */
+    private async installGitHooks(repoPath: string): Promise<vscode.FileSystemWatcher | undefined> {
         const gitDir = path.join(repoPath, '.git');
         const hooksDir = path.join(gitDir, 'hooks');
         const signalFile = path.join(gitDir, '.diffpilot-signal');
+
+        // --- Consent gate ---
+        if (!this._hookConsent.has(repoPath)) {
+            const answer = await vscode.window.showInformationMessage(
+                `Diffy: To detect commits automatically in "${path.basename(repoPath)}", ` +
+                `it needs to install post-commit/post-merge/post-checkout git hooks. ` +
+                `These will be removed when you uninstall or disable Diffy.`,
+                { modal: false },
+                'Allow',
+                'Skip'
+            );
+            if (answer !== 'Allow') {
+                this.outputChannel.appendLine(
+                    `Hook install skipped (no consent): ${repoPath}`
+                );
+                return undefined;  // Git API layer alone will still detect commits
+            }
+            this._hookConsent.add(repoPath);
+        }
 
         // Ensure hooks directory exists
         try {
@@ -172,26 +215,35 @@ export class CommitDetector {
             return undefined;
         }
 
+        const restoreActions: Array<
+            | { kind: 'delete'; hookPath: string }
+            | { kind: 'strip'; hookPath: string; appendLine: string }
+        > = this._hookRestoreMap.get(repoPath) ?? [];
+        this._hookRestoreMap.set(repoPath, restoreActions);
+
         // Install hooks that touch the signal file
         const hookNames = ['post-commit', 'post-merge', 'post-checkout'];
-        const hookContent = process.platform === 'win32'
-            ? `@echo off\necho %date% %time% > "${signalFile}"\n`
-            : `#!/bin/sh\ndate > "${signalFile}"\n`;
+        const signalLine = process.platform === 'win32'
+            ? `\necho %date% %time% > "${signalFile}"\n`
+            : `\ndate > "${signalFile}"\n`;
+        const newFileContent = process.platform === 'win32'
+            ? `@echo off${signalLine}`
+            : `#!/bin/sh${signalLine}`;
 
         for (const hookName of hookNames) {
             const hookPath = path.join(hooksDir, hookName);
             try {
-                // Only install if hook doesn't exist (don't overwrite user hooks)
                 if (!fs.existsSync(hookPath)) {
-                    fs.writeFileSync(hookPath, hookContent, { mode: 0o755 });
+                    // We're creating this file — record for deletion on cleanup
+                    fs.writeFileSync(hookPath, newFileContent, { mode: 0o755 });
+                    restoreActions.push({ kind: 'delete', hookPath });
                 } else {
-                    // Append to existing hook if it doesn't already have our signal
+                    // Append only if our signal line isn't already present
                     const existing = fs.readFileSync(hookPath, 'utf-8');
                     if (!existing.includes('.diffpilot-signal')) {
-                        const append = process.platform === 'win32'
-                            ? `\necho %date% %time% > "${signalFile}"\n`
-                            : `\ndate > "${signalFile}"\n`;
-                        fs.appendFileSync(hookPath, append);
+                        fs.appendFileSync(hookPath, signalLine);
+                        // Record the exact line appended so we can strip it later
+                        restoreActions.push({ kind: 'strip', hookPath, appendLine: signalLine });
                     }
                 }
             } catch {
@@ -217,13 +269,50 @@ export class CommitDetector {
         }
     }
 
+    /**
+     * Undo all hook changes recorded for the given repo.
+     * - 'delete': removes files Diffy created from scratch
+     * - 'strip': removes only the line Diffy appended to an existing hook
+     */
+    private restoreGitHooks(repoPath: string): void {
+        const actions = this._hookRestoreMap.get(repoPath);
+        if (!actions || actions.length === 0) { return; }
+
+        for (const action of actions) {
+            try {
+                if (action.kind === 'delete') {
+                    if (fs.existsSync(action.hookPath)) {
+                        fs.unlinkSync(action.hookPath);
+                        this.outputChannel.appendLine(`Removed hook: ${action.hookPath}`);
+                    }
+                } else if (action.kind === 'strip') {
+                    if (fs.existsSync(action.hookPath)) {
+                        const content = fs.readFileSync(action.hookPath, 'utf-8');
+                        const stripped = content.split(action.appendLine).join('');
+                        fs.writeFileSync(action.hookPath, stripped, { mode: 0o755 });
+                        this.outputChannel.appendLine(`Restored hook: ${action.hookPath}`);
+                    }
+                }
+            } catch (err: any) {
+                this.outputChannel.appendLine(
+                    `Warning: could not restore hook ${action.hookPath}: ${err.message}`
+                );
+            }
+        }
+
+        this._hookRestoreMap.delete(repoPath);
+        this._hookConsent.delete(repoPath);
+    }
+
     // ---------------------------------------------------------------
     // Layer 3: GitHub Webhook Notifications
     // ---------------------------------------------------------------
 
     private initWebhookLayer(): void {
-        // Listen for webhook/indexed notifications from the Python backend
-        this.backend.setNotificationHandler((method, params) => {
+        // Subscribe to backend notifications using the correct EventEmitter API.
+        // setNotificationHandler() was never defined on BackendClient \u2014 this
+        // uses onNotificationEvent which is the actual pub-sub mechanism.
+        const sub = this.backend.onNotificationEvent.event(({ method, params }) => {
             if (method === 'webhook/indexed') {
                 this.outputChannel.appendLine(
                     `Webhook: indexed ${params.commits_indexed} commits from ${params.repo}`
@@ -232,12 +321,9 @@ export class CommitDetector {
                 // the UI to refresh status
                 vscode.commands.executeCommand('diffy.status');
             }
-
-            // Forward streaming notifications
-            if (method.startsWith('stream/')) {
-                // These are handled by the extension.ts query flow
-            }
+            // stream/* notifications are handled by the extension.ts query flow
         });
+        this.disposables.push(sub);
     }
 
     // ---------------------------------------------------------------

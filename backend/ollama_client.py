@@ -184,6 +184,29 @@ class OllamaClient:
         except (urllib.error.URLError, OSError) as e:
             yield f"[Ollama error: {e}]"
 
+    # ----- Embeddings -----
+
+    def embeddings(self, prompt, model=None):
+        """Get embeddings for a given text."""
+        model = model or cfg.get("embed_model", "nomic-embed-text")
+        payload = {
+            "model": model,
+            "prompt": prompt,
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.base_url}/api/embeddings",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data.get("embedding", [])
+        except Exception:
+            return []
+
 
 # ---------------------------------------------------------------------------
 # Self-test

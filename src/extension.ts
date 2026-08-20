@@ -7,6 +7,11 @@
 import * as vscode from 'vscode';
 import { BackendClient } from './backendClient';
 import { CommitDetector } from './commitDetector';
+import { ChatViewProvider } from './providers/chatViewProvider';
+import { DiffyCodeLensProvider } from './providers/diffyCodeLensProvider';
+import { DiffyDecorationProvider } from './providers/diffyDecorationProvider';
+import { cmdShowDiff } from './commands/showDiff';
+import { cmdReviewCommit } from './commands/reviewCommit';
 
 interface ConfigOption extends vscode.QuickPickItem {
     action?: string;
@@ -67,10 +72,46 @@ export async function activate(context: vscode.ExtensionContext) {
         });
     }
 
+    // Index current workspace state on file save
+    context.subscriptions.push(
+        vscode.workspace.onDidSaveTextDocument(async (document) => {
+            const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+            if (workspaceFolder) {
+                const repoPath = workspaceFolder.uri.fsPath;
+                const filePath = vscode.workspace.asRelativePath(document.uri, false);
+                const content = document.getText();
+                try {
+                    await backend.indexFile(repoPath, filePath, content);
+                    statusBarItem.text = `$(rocket) Diffy ✓`;
+                } catch (err: any) {
+                    outputChannel.appendLine(`File index error: ${err.message}`);
+                }
+            }
+        })
+    );
+
+    // Register Webview Provider
+    const chatProvider = new ChatViewProvider(context.extensionUri, backend);
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider)
+    );
+
+    // Register CodeLens and Decoration Providers
+    const codeLensProvider = new DiffyCodeLensProvider();
+    context.subscriptions.push(
+        vscode.languages.registerCodeLensProvider({ scheme: 'file' }, codeLensProvider)
+    );
+
+    const decorationProvider = new DiffyDecorationProvider(backend);
+    context.subscriptions.push(decorationProvider);
+    
     // ---- Register Commands ----
 
     context.subscriptions.push(
         vscode.commands.registerCommand('diffy.askQuestion', cmdAskQuestion),
+        vscode.commands.registerCommand('diffy.askQuestionContext', (uri, range, symbolName) => cmdAskQuestionContext(uri, range, symbolName, chatProvider)),
+        vscode.commands.registerCommand('diffy.showDiff', cmdShowDiff),
+        vscode.commands.registerCommand('diffy.reviewCommit', () => cmdReviewCommit(backend)),
         vscode.commands.registerCommand('diffy.indexRepo', cmdIndexRepo),
         vscode.commands.registerCommand('diffy.status', cmdStatus),
         vscode.commands.registerCommand('diffy.clearIndex', cmdClearIndex),
@@ -107,66 +148,13 @@ export function deactivate() {
 // ---------------------------------------------------------------------------
 
 async function cmdAskQuestion() {
-    const question = await vscode.window.showInputBox({
-        prompt: 'Ask Diffy about your codebase',
-        placeHolder: 'e.g., How was the authentication system implemented?',
-        ignoreFocusOut: true,
-    });
+    vscode.commands.executeCommand('diffy.chatView.focus');
+}
 
-    if (!question) { return; }
-
-    outputChannel.show(true); // Show output channel
-    outputChannel.appendLine(`\n${'─'.repeat(60)}`);
-    outputChannel.appendLine(`📝 Question: ${question}`);
-    outputChannel.appendLine(`${'─'.repeat(60)}`);
-
-    statusBarItem.text = '$(loading~spin) Diffy...';
-
-    try {
-        // Set up streaming notification handler
-        let streamedText = '';
-
-        const disposable = backend.onNotificationEvent.event((msg) => {
-            const { method, params } = msg;
-            if (method === 'stream/context') {
-                outputChannel.appendLine('\n📚 Relevant code changes found:');
-                for (const ctx of (params.context || [])) {
-                    outputChannel.appendLine(
-                        `  • [${ctx.score}] ${ctx.repo}/${ctx.file} — ${ctx.commit}: ${ctx.message}`
-                    );
-                }
-                outputChannel.appendLine('');
-            } else if (method === 'stream/chunk') {
-                streamedText += params.text;
-                // Output channel doesn't support replacing lines, so we write chunks
-                // They'll appear concatenated in the output
-            } else if (method === 'stream/done') {
-                outputChannel.appendLine(`\n🤖 Diffy:\n${streamedText}`);
-                outputChannel.appendLine(`\n${'─'.repeat(60)}\n`);
-                statusBarItem.text = '$(rocket) Diffy ✓';
-                disposable.dispose();
-            } else if (method === 'stream/error') {
-                outputChannel.appendLine(`\n❌ Error: ${params.error}`);
-                statusBarItem.text = '$(rocket) Diffy ✓';
-                disposable.dispose();
-            }
-        });
-
-        await backend.queryStream(question);
-
-    } catch (err: any) {
-        // Fallback to non-streaming
-        try {
-            const result = await backend.query(question);
-            outputChannel.appendLine(`\n🤖 Diffy:\n${result.response}`);
-            outputChannel.appendLine(`\n${'─'.repeat(60)}\n`);
-        } catch (err2: any) {
-            outputChannel.appendLine(`\n❌ Error: ${err2.message}`);
-            vscode.window.showErrorMessage(`Diffy: ${err2.message}`);
-        }
-    }
-
-    statusBarItem.text = '$(rocket) Diffy ✓';
+async function cmdAskQuestionContext(uri: vscode.Uri, range: vscode.Range, symbolName: string, chatProvider: ChatViewProvider) {
+    vscode.commands.executeCommand('diffy.chatView.focus');
+    const question = `Can you explain the \`${symbolName}\` code block?`;
+    await chatProvider.askQuestion(question);
 }
 
 // ---------------------------------------------------------------------------

@@ -133,6 +133,34 @@ def get_latest_hash(repo_path):
     return (raw or "").strip()
 
 
+def get_recent_modifications(repo_path, file_path, limit=10):
+    """Return list of line numbers (1-based) modified in the last N commits.
+    Lines from uncommitted/staged changes are excluded.
+    """
+    commits = get_commits(repo_path, limit=limit)
+    if not commits:
+        return []
+    recent_hashes = {c["hash"] for c in commits}
+
+    raw = _run_git(repo_path, "blame", "-l", "--", file_path)
+    if not raw:
+        return []
+
+    modified_lines = []
+    for line_num, line in enumerate(raw.split("\n"), 1):
+        if not line:
+            continue
+        # git blame -l output: <40-char-hash> (<author>...) <line content>
+        commit_hash = line.split(" ")[0].lstrip("^")
+        # Skip uncommitted/staged changes (all-zeros hash)
+        if commit_hash.startswith("0" * 8):
+            continue
+        if commit_hash in recent_hashes:
+            modified_lines.append(line_num)
+
+    return modified_lines
+
+
 # ---------------------------------------------------------------------------
 # Diff Parser
 # ---------------------------------------------------------------------------

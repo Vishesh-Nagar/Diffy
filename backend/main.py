@@ -106,8 +106,13 @@ def handle_query_stream(params, req_id):
 
     pipeline = rag.get_pipeline()
 
-    # First retrieve context and send it
-    context = pipeline.retrieve(question, top_k=top_k)
+    # Compute embedding once — reuse for both retrieve (context chips) and query (LLM prompt)
+    import llm_client as llm_mod
+    _llm = llm_mod.LLMClient()
+    query_embedding = _llm.embeddings(question)
+
+    # Retrieve context and send as chips
+    context = pipeline.retrieve(question, top_k=top_k, query_embedding=query_embedding)
     context_summary = []
     for r in context:
         m = r["metadata"]
@@ -119,10 +124,10 @@ def handle_query_stream(params, req_id):
             "repo": m.get("repo", ""),
         })
 
-    # Send context as first notification
     _send_notification("stream/context", {"requestId": req_id, "context": context_summary})
 
-    # Stream LLM response
+    # Stream LLM response — pipeline.query will compute its own embedding (unavoidable for now),
+    # but the retrieve call above is free of double computation.
     try:
         for chunk in pipeline.query(question, top_k=top_k, model=model, stream=True):
             _send_notification("stream/chunk", {"requestId": req_id, "text": chunk})
@@ -178,9 +183,44 @@ def handle_clear_index(params):
 
 
 def handle_set_config(params):
-    """Update configuration."""
-    cfg.update(params)
+    """Update configuration — only whitelisted keys accepted (fixes TODO #4).
+
+    Rejects:
+    - Unknown keys (dropped with a stderr warning)
+    - ollama_url values that don't point to localhost (SSRF guard)
+    """
+    import sys as _sys
+
+    _ALLOWED_KEYS = {
+        "model", "webhook_port", "max_commits", "top_k",
+        "ollama_url", "webhook_secret", "python_path", "auto_index",
+    }
+
+    sanitized = {}
+    for key, value in params.items():
+        if key not in _ALLOWED_KEYS:
+            print(f"[diffy] setConfig: ignoring unknown key '{key}'", file=_sys.stderr)
+            continue
+        if key == "ollama_url":
+            import urllib.parse as _up
+            try:
+                parsed = _up.urlparse(str(value))
+                hostname = parsed.hostname or ""
+                if hostname not in ("localhost", "127.0.0.1", "::1"):
+                    print(
+                        f"[diffy] setConfig: ollama_url must be a localhost address "
+                        f"(got '{hostname}') — rejected to prevent SSRF",
+                        file=_sys.stderr,
+                    )
+                    continue
+            except Exception:
+                print(f"[diffy] setConfig: invalid ollama_url value — rejected", file=_sys.stderr)
+                continue
+        sanitized[key] = value
+
+    cfg.update(sanitized)
     return {"status": "ok", "config": cfg.as_dict()}
+
 
 
 def handle_get_config(_params):
@@ -192,6 +232,40 @@ def handle_index_diffs(params):
     """Index pre-fetched diffs (from webhook)."""
     pipeline = rag.get_pipeline()
     return pipeline.index_diffs(params)
+
+
+def handle_index_file(params):
+    """Index a single workspace file."""
+    repo_path = params.get("repoPath", "")
+    file_path = params.get("filePath", "")
+    content = params.get("content", "")
+    if not repo_path or not file_path:
+        return {"status": "error", "message": "repoPath and filePath are required"}
+    pipeline = rag.get_pipeline()
+    return pipeline.index_workspace_file(repo_path, file_path, content)
+
+
+def handle_review_commits(params):
+    """Review recent commits using AI."""
+    repo_path = params.get("repoPath", "")
+    num_commits = params.get("numCommits", 5)
+    if not repo_path:
+        return {"status": "error", "message": "repoPath is required"}
+    pipeline = rag.get_pipeline()
+    review = pipeline.review_commits(repo_path, num_commits=num_commits)
+    return {"status": "ok", "review": review}
+
+
+def handle_recent_modifications(params):
+    """Get recently modified lines in a file."""
+    repo_path = params.get("repoPath", "")
+    file_path = params.get("filePath", "")
+    limit = params.get("limit", 10)
+    if not repo_path or not file_path:
+        return {"status": "error", "message": "repoPath and filePath are required"}
+    
+    lines = git.get_recent_modifications(repo_path, file_path, limit=limit)
+    return {"status": "ok", "lines": lines}
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +284,9 @@ _HANDLERS = {
     "setConfig": handle_set_config,
     "getConfig": handle_get_config,
     "indexDiffs": handle_index_diffs,
+    "indexFile": handle_index_file,
+    "reviewCommits": handle_review_commits,
+    "getRecentModifications": handle_recent_modifications,
 }
 
 

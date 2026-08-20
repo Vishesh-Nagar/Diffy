@@ -241,6 +241,14 @@ class LLMClient:
         """Generate text using the active LLM provider."""
         return self._client.generate(prompt, model=model, system=system, stream=stream)
 
+    def embeddings(self, prompt, model=None):
+        """Get embeddings (fallback to Ollama if active provider doesn't support it directly)"""
+        if hasattr(self._client, "embeddings"):
+            return self._client.embeddings(prompt, model)
+        else:
+            # For this MVP, if cloud doesn't support it, fallback to local Ollama
+            return ollama.OllamaClient().embeddings(prompt, model)
+
     def info(self):
         """Return a dict describing the active provider."""
         return {

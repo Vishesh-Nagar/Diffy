@@ -175,6 +175,8 @@ class RAGPipeline:
 
             for chunk in chunks:
                 if not self._store.has_doc(chunk["id"]):
+                    emb = self._llm.embeddings(chunk["text"])
+                    chunk["embedding"] = emb
                     all_items.append(chunk)
                     total_chunks += 1
 
@@ -224,6 +226,8 @@ class RAGPipeline:
 
             for chunk in chunks:
                 if not self._store.has_doc(chunk["id"]):
+                    emb = self._llm.embeddings(chunk["text"])
+                    chunk["embedding"] = emb
                     all_items.append(chunk)
 
         if all_items:
@@ -233,6 +237,78 @@ class RAGPipeline:
                 self._save_state()
 
         return {"status": "ok", "chunks_added": len(all_items)}
+
+    def review_commits(self, repo_path, num_commits=5):
+        """Fetch the last N commits, construct their diffs, and generate a code review."""
+        commits = git.get_commits(repo_path, limit=num_commits)
+        if not commits:
+            return "No recent commits found."
+        
+        diffs_text = []
+        for c in commits:
+            raw_diff = git.get_diff(repo_path, c["hash"])
+            if raw_diff:
+                diffs_text.append(f"Commit: {c['short_hash']} - {c['message']}\n{raw_diff}")
+                
+        if not diffs_text:
+            return "No code changes found in recent commits."
+            
+        # Truncate if too large to fit in context window
+        combined_diffs = "\n\n".join(diffs_text)[:20000] 
+        
+        system_prompt = (
+            "You are an expert AI code reviewer. Review the provided git commit diffs. "
+            "Point out any potential bugs, security issues, performance problems, or style improvements. "
+            "Be concise and format your feedback clearly using Markdown."
+        )
+        
+        prompt = f"Please review the following recent commits:\n\n{combined_diffs}"
+        
+        return self._llm.generate(prompt, system=system_prompt, stream=False)
+
+    def index_workspace_file(self, repo_path, file_path, content):
+        """Index a single workspace file when saved."""
+        abs_path = os.path.abspath(repo_path)
+        repo_name = os.path.basename(abs_path)
+        
+        # Clear ONLY previous WORKSPACE chunks for this file (not committed diff history)
+        self._store.remove_by_metadata_multi({"commit": "WORKSPACE", "file": file_path})
+        
+        # We chunk the file by lines
+        lines = content.split('\n')
+        chunks = []
+        chunk_size = cfg.get("chunk_max_lines", 80)
+        
+        for i in range(0, len(lines), chunk_size):
+            chunk_lines = lines[i:i+chunk_size]
+            text = "\n".join(chunk_lines)
+            if not text.strip():
+                continue
+                
+            doc_id = vs.make_doc_id(repo_name, "WORKSPACE", file_path, i)
+            
+            chunk = {
+                "id": doc_id,
+                "text": text,
+                "metadata": {
+                    "repo": repo_name,
+                    "commit": "WORKSPACE",
+                    "short_hash": "LOCAL",
+                    "message": "Current workspace state",
+                    "author": "You",
+                    "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "file": file_path,
+                }
+            }
+            emb = self._llm.embeddings(text)
+            chunk["embedding"] = emb
+            chunks.append(chunk)
+
+        if chunks:
+            self._store.add_batch(chunks)
+            self._store.rebuild()
+            
+        return {"status": "ok", "chunks_added": len(chunks)}
 
     # ----- Querying -----
 
@@ -244,23 +320,26 @@ class RAGPipeline:
         if top_k is None:
             top_k = cfg.get("top_k", 5)
 
-        # Retrieve relevant diffs
-        results = self._store.search(question, top_k=top_k)
+        # Compute embedding once and reuse for both retrieve and (future) re-ranking
+        query_embedding = self._llm.embeddings(question)
+        results = self._store.search(question, top_k=top_k, query_embedding=query_embedding)
 
-        # Build the prompt
         prompt = self._build_prompt(question, results)
 
-        # Call LLM
         if stream:
             return self._llm.generate(prompt, model=model, stream=True)
         else:
             return self._llm.generate(prompt, model=model, stream=False)
 
-    def retrieve(self, question, top_k=None):
-        """Retrieve relevant diffs without calling LLM."""
+    def retrieve(self, question, top_k=None, query_embedding=None):
+        """Retrieve relevant diffs without calling LLM.
+        Accepts a pre-computed query_embedding to avoid double-calling Ollama.
+        """
         if top_k is None:
             top_k = cfg.get("top_k", 5)
-        return self._store.search(question, top_k=top_k)
+        if query_embedding is None:
+            query_embedding = self._llm.embeddings(question)
+        return self._store.search(question, top_k=top_k, query_embedding=query_embedding)
 
     def _build_prompt(self, question, context_results):
         """Build the RAG prompt with retrieved diff context."""

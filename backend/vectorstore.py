@@ -94,7 +94,8 @@ class VectorStore:
                 doc_id TEXT PRIMARY KEY,
                 text TEXT,
                 metadata TEXT,
-                total_tokens INTEGER
+                total_tokens INTEGER,
+                embedding TEXT
             )''')
             conn.execute('''CREATE TABLE IF NOT EXISTS inverted_index (
                 term TEXT,
@@ -138,6 +139,7 @@ class VectorStore:
                 doc_id = item["id"]
                 text = item["text"]
                 metadata = json.dumps(item.get("metadata", {}))
+                embedding = json.dumps(item.get("embedding", []))
                 
                 tokens = self._tokenizer.tokenize(text)
                 tf_counts = Counter(tokens)
@@ -156,8 +158,8 @@ class VectorStore:
                         cursor.execute("UPDATE global_term_df SET doc_count = doc_count - 1 WHERE term = ?", (term,))
                 
                 # Insert document
-                cursor.execute("INSERT INTO documents (doc_id, text, metadata, total_tokens) VALUES (?, ?, ?, ?)",
-                               (doc_id, text, metadata, total_tokens))
+                cursor.execute("INSERT INTO documents (doc_id, text, metadata, total_tokens, embedding) VALUES (?, ?, ?, ?, ?)",
+                               (doc_id, text, metadata, total_tokens, embedding))
                 
                 # Insert terms and update df
                 for term, count in tf_counts.items():
@@ -175,10 +177,10 @@ class VectorStore:
         """No-op for incremental SQLite implementation."""
         pass
 
-    def search(self, query, top_k=5):
-        """Sub-linear search using inverted index and dot product."""
+    def search(self, query, top_k=5, query_embedding=None):
+        """Sub-linear search using inverted index and/or semantic embeddings."""
         query_tokens = self._tokenizer.tokenize(query)
-        if not query_tokens:
+        if not query_tokens and not query_embedding:
             return []
             
         query_tf = Counter(query_tokens)
@@ -207,6 +209,9 @@ class VectorStore:
                 combined_weights.append((term, q_tf * idf * idf))
                 
             if not combined_weights:
+                # Fix 4: if no keyword overlap but we have an embedding, do a bounded semantic scan
+                if query_embedding:
+                    return self._semantic_only_search(cursor, query_embedding, top_k, doc_count)
                 return []
                 
             cursor.execute("CREATE TEMPORARY TABLE IF NOT EXISTS temp_query_weights (term TEXT PRIMARY KEY, weight REAL)")
@@ -214,25 +219,110 @@ class VectorStore:
             cursor.executemany("INSERT INTO temp_query_weights (term, weight) VALUES (?, ?)", combined_weights)
             
             cursor.execute(f'''
-                SELECT d.doc_id, d.text, d.metadata, SUM(i.tf * q.weight) as score
+                SELECT d.doc_id, d.text, d.metadata, SUM(i.tf * q.weight) as score, d.embedding
                 FROM inverted_index i
                 JOIN temp_query_weights q ON i.term = q.term
                 JOIN documents d ON i.doc_id = d.doc_id
                 GROUP BY i.doc_id
                 ORDER BY score DESC
-                LIMIT ?
-            ''', (top_k,))
+                LIMIT 50
+            ''')
             
             results = []
             for row in cursor.fetchall():
-                doc_id, text, metadata_str, score = row
+                doc_id, text, metadata_str, tfidf_score, embedding_str = row
+                
+                score = tfidf_score
+                
+                if query_embedding and embedding_str:
+                    try:
+                        doc_emb = json.loads(embedding_str)
+                        if doc_emb and len(doc_emb) == len(query_embedding):
+                            dot = sum(a * b for a, b in zip(doc_emb, query_embedding))
+                            norm_a = math.sqrt(sum(a * a for a in doc_emb))
+                            norm_b = math.sqrt(sum(b * b for b in query_embedding))
+                            if norm_a and norm_b:
+                                cos_sim = dot / (norm_a * norm_b)
+                                # Hybrid score: 30% TF-IDF, 70% semantic
+                                score = (tfidf_score * 0.3) + (cos_sim * 0.7)
+                    except Exception:
+                        pass
+
                 results.append({
                     "doc_id": doc_id,
                     "score": round(score, 4),
                     "text": text,
                     "metadata": json.loads(metadata_str)
                 })
-            return results
+                
+            results.sort(key=lambda x: x["score"], reverse=True)
+            return results[:top_k]
+
+    def _semantic_only_search(self, cursor, query_embedding, top_k, doc_count):
+        """Bounded semantic scan: read at most 200 rows and rank by cosine similarity."""
+        limit = min(doc_count, 200)
+        cursor.execute("SELECT doc_id, text, metadata, embedding FROM documents LIMIT ?", (limit,))
+        results = []
+        for doc_id, text, metadata_str, embedding_str in cursor.fetchall():
+            if not embedding_str:
+                continue
+            try:
+                doc_emb = json.loads(embedding_str)
+                if doc_emb and len(doc_emb) == len(query_embedding):
+                    dot = sum(a * b for a, b in zip(doc_emb, query_embedding))
+                    norm_a = math.sqrt(sum(a * a for a in doc_emb))
+                    norm_b = math.sqrt(sum(b * b for b in query_embedding))
+                    if norm_a and norm_b:
+                        score = dot / (norm_a * norm_b)
+                        results.append({
+                            "doc_id": doc_id,
+                            "score": round(score, 4),
+                            "text": text,
+                            "metadata": json.loads(metadata_str)
+                        })
+            except Exception:
+                pass
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:top_k]
+
+    def remove_by_metadata(self, key, value):
+        """Remove all documents matching a metadata key-value pair."""
+        return self.remove_by_metadata_multi({key: value})
+
+    def remove_by_metadata_multi(self, filters: dict):
+        """Remove all documents matching ALL of the given metadata key-value pairs."""
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+
+            # Build WHERE clause with json_extract for each filter
+            conditions = " AND ".join(
+                f"json_extract(metadata, '$.{k}') = ?" for k in filters
+            )
+            values = list(filters.values())
+
+            cursor.execute(
+                f"SELECT doc_id FROM documents WHERE {conditions}",
+                values
+            )
+            doc_ids = [row[0] for row in cursor.fetchall()]
+
+            if not doc_ids:
+                return 0
+
+            for doc_id in doc_ids:
+                cursor.execute("SELECT term FROM inverted_index WHERE doc_id = ?", (doc_id,))
+                terms = {row[0] for row in cursor.fetchall()}
+
+                cursor.execute("DELETE FROM inverted_index WHERE doc_id = ?", (doc_id,))
+                cursor.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+
+                for term in terms:
+                    cursor.execute("UPDATE global_term_df SET doc_count = doc_count - 1 WHERE term = ?", (term,))
+
+            cursor.execute("DELETE FROM global_term_df WHERE doc_count <= 0")
+            conn.commit()
+            return len(doc_ids)
 
     def remove(self, doc_id):
         """Remove a document."""
@@ -290,7 +380,7 @@ class VectorStore:
 def make_doc_id(repo_name, commit_hash, file_path, hunk_index=0):
     """Generate a deterministic document ID."""
     raw = f"{repo_name}:{commit_hash}:{file_path}:{hunk_index}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
 if __name__ == "__main__":

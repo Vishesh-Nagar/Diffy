@@ -1,6 +1,6 @@
 .venv/
 node_modules/
-.vscode/
+# .vscode/
 .vscode-test/
 out/
 .vscodeignore

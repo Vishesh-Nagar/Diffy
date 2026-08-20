@@ -27,6 +27,24 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "diffy-sidebar",
+          "title": "Diffy",
+          "icon": "$(rocket)"
+        }
+      ]
+    },
+    "views": {
+      "diffy-sidebar": [
+        {
+          "type": "webview",
+          "id": "diffy.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "diffy.indexRepo",
@@ -47,6 +65,10 @@
       {
         "command": "diffy.selectModel",
         "title": "Diffy: Select Model"
+      },
+      {
+        "command": "diffy.reviewCommit",
+        "title": "Diffy: Review Recent Commits"
       },
       {
         "command": "diffy.configure",
@@ -90,6 +112,11 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically index new commits when detected"
+        },
+        "diffy.embedModel": {
+          "type": "string",
+          "default": "nomic-embed-text",
+          "description": "Ollama model used for generating embeddings (e.g. nomic-embed-text, mxbai-embed-large)"
         }
       }
     }
@@ -104,5 +131,8 @@
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
     "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "@vscode/webview-ui-toolkit": "^1.4.0"
   }
 }

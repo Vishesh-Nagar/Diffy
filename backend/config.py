@@ -34,6 +34,7 @@ DEFAULTS = {
     "anthropic_model": "claude-sonnet-4-20250514",
     "gemini_api_key": "",
     "gemini_model": "gemini-2.0-flash",
+    "embed_model": "nomic-embed-text",
 }
 
 _config = dict(DEFAULTS)
@@ -74,7 +75,9 @@ def load():
             with open(path, "r", encoding="utf-8") as f:
                 saved = json.load(f)
             _config.update(saved)
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as e:
+            import sys
+            print(f"Warning: Failed to load config.json: {e}", file=sys.stderr)
             pass  # use defaults on error
 
     # --- 3. Environment variables override everything else ---
@@ -95,6 +98,7 @@ def load():
         "DIFFY_ANTHROPIC_MODEL": "anthropic_model",
         "DIFFY_GEMINI_API_KEY": "gemini_api_key",
         "DIFFY_GEMINI_MODEL": "gemini_model",
+        "DIFFY_EMBED_MODEL": "embed_model",
     }
     for env_key, cfg_key in env_map.items():
         val = os.environ.get(env_key)

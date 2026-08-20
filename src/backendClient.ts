@@ -78,6 +78,7 @@ export class BackendClient {
                         DIFFY_WEBHOOK_PORT: String(config.get<number>('webhookPort', 9417)),
                         DIFFY_MAX_COMMITS: String(config.get<number>('maxCommits', 200)),
                         DIFFY_TOP_K: String(config.get<number>('topK', 5)),
+                        DIFFY_EMBED_MODEL: config.get<string>('embedModel', 'nomic-embed-text'),
                     },
                 });
 
@@ -263,5 +264,17 @@ export class BackendClient {
 
     async indexDiffs(data: any): Promise<any> {
         return this.request('indexDiffs', data);
+    }
+
+    async indexFile(repoPath: string, filePath: string, content: string): Promise<any> {
+        return this.request('indexFile', { repoPath, filePath, content });
+    }
+
+    async reviewCommits(repoPath: string, numCommits: number = 5): Promise<any> {
+        return this.request('reviewCommits', { repoPath, numCommits });
+    }
+
+    async getRecentModifications(repoPath: string, filePath: string, limit: number = 10): Promise<any> {
+        return this.request('getRecentModifications', { repoPath, filePath, limit });
     }
 }

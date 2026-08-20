@@ -9,6 +9,7 @@ import json
 import hmac
 import hashlib
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import config as cfg
@@ -90,12 +91,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if event_type == "push":
             event_data = self._parse_push(payload)
             if _on_push_callback and event_data:
-                # Run callback in a separate thread to not block the HTTP response
-                threading.Thread(
-                    target=_on_push_callback,
-                    args=(event_data,),
-                    daemon=True,
-                ).start()
+                # Submit to bounded pool instead of spawning an unlimited thread
+                # (fixes TODO #13 — prevents thread exhaustion under webhook floods)
+                _executor.submit(_on_push_callback, event_data)
 
         # Handle ping (webhook setup verification)
         elif event_type == "ping":
@@ -153,6 +151,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
 _server = None
 _thread = None
+# Bounded thread pool: caps concurrent webhook processing at 4 workers.
+# Excess requests queue rather than spawning unlimited threads (fixes TODO #13).
+_executor = ThreadPoolExecutor(max_workers=4)
 
 
 def start(port=None):
