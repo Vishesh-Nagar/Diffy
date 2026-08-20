@@ -34,15 +34,10 @@ export class CommitDetector {
         lastHash: string;
         watcher?: vscode.FileSystemWatcher;
     }>();
+    private context: vscode.ExtensionContext;
     private server: ServerClient;
     private throttleTimers = new Map<string, NodeJS.Timeout>();
     private outputChannel: vscode.OutputChannel;
-
-    /**
-     * Tracks repos where the user has granted hook-installation consent.
-     * Stored in memory only — consent is re-requested on each session.
-     */
-    private _hookConsent = new Set<string>();
 
     /**
      * Maps repoPath → list of restoration actions to undo hook changes on deactivate.
@@ -62,7 +57,8 @@ export class CommitDetector {
     }>();
     public readonly onNewCommits = this._onNewCommits.event;
 
-    constructor(backend: ServerClient, outputChannel: vscode.OutputChannel) {
+    constructor(context: vscode.ExtensionContext, backend: ServerClient, outputChannel: vscode.OutputChannel) {
+        this.context = context;
         this.server = backend;
         this.outputChannel = outputChannel;
     }
@@ -180,7 +176,6 @@ export class CommitDetector {
     /**
      * Prompt the user for consent once per repo, then install signal-file hooks.
      * Records every file write so restoreGitHooks() can undo the changes exactly.
-     * Records every file write so restoreGitHooks() can undo the changes exactly.
      */
     private async installGitHooks(repoPath: string): Promise<vscode.FileSystemWatcher | undefined> {
         const gitDir = path.join(repoPath, '.git');
@@ -188,7 +183,8 @@ export class CommitDetector {
         const signalFile = path.join(gitDir, '.diffpilot-signal');
 
         // --- Consent gate ---
-        if (!this._hookConsent.has(repoPath)) {
+        const consentKey = `diffy.hookConsent.${repoPath}`;
+        if (!this.context.globalState.get<boolean>(consentKey, false)) {
             const answer = await vscode.window.showInformationMessage(
                 `Diffy: To detect commits automatically in "${path.basename(repoPath)}", ` +
                 `it needs to install post-commit/post-merge/post-checkout git hooks. ` +
@@ -203,7 +199,7 @@ export class CommitDetector {
                 );
                 return undefined;  // Git API layer alone will still detect commits
             }
-            this._hookConsent.add(repoPath);
+            await this.context.globalState.update(consentKey, true);
         }
 
         // Ensure hooks directory exists
@@ -301,7 +297,7 @@ export class CommitDetector {
         }
 
         this._hookRestoreMap.delete(repoPath);
-        this._hookConsent.delete(repoPath);
+        this.context.globalState.update(`diffy.hookConsent.${repoPath}`, undefined);
     }
 
     // ---------------------------------------------------------------

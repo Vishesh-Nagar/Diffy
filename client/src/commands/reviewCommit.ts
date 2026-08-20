@@ -33,7 +33,7 @@ export async function cmdReviewCommit(server: ServerClient) {
 
     const numCommits = parseInt(numCommitsStr);
 
-    vscode.window.withProgress({
+    return vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
         title: `Diffy: Reviewing last ${numCommits} commits...`,
         cancellable: false

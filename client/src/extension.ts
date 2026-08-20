@@ -49,7 +49,7 @@ export async function activate(context: vscode.ExtensionContext) {
     }
 
     // Start commit detector
-    commitDetector = new CommitDetector(server, outputChannel);
+    commitDetector = new CommitDetector(context, server, outputChannel);
     await commitDetector.activate();
 
     // Auto-index on new commits

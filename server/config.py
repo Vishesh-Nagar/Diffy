@@ -78,7 +78,6 @@ def load():
         except (json.JSONDecodeError, OSError) as e:
             import sys
             print(f"Warning: Failed to load config.json: {e}", file=sys.stderr)
-            pass  # use defaults on error
 
     # --- 3. Environment variables override everything else ---
     env_map = {

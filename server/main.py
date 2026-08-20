@@ -107,9 +107,7 @@ def handle_query_stream(params, req_id):
     pipeline = rag.get_pipeline()
 
     # Compute embedding once — reuse for both retrieve (context chips) and query (LLM prompt)
-    import llm_client as llm_mod
-    _llm = llm_mod.LLMClient()
-    query_embedding = _llm.embeddings(question)
+    query_embedding = llm.LLMClient().embeddings(question)
 
     # Retrieve context and send as chips
     context = pipeline.retrieve(question, top_k=top_k, query_embedding=query_embedding)

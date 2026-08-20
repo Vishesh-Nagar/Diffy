@@ -9,4 +9,5 @@ description = "Backend for the Diffy VS Code Extension (Local Git-Diff RAG)"
 requires-python = ">=3.10"
 dependencies = [
     "python-dotenv>=1.0.0",
+    "mcp",
 ]
