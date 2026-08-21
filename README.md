@@ -306,7 +306,7 @@ In Cursor settings → **MCP**, add a new server:
 ### Connecting Claude Code (CLI)
 
 ```bash
-claude mcp add diffy python /absolute/path/to/diffy/server/mcp_server.py
+claude mcp add diffy -- python /absolute/path/to/diffy/server/mcp_server.py
 ```
 
 ---

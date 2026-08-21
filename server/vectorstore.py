@@ -85,31 +85,42 @@ class VectorStore:
                 self._local.conn = sqlite3.connect(self._db_path, timeout=30.0)
             self._local.conn.execute("PRAGMA journal_mode=WAL")
             self._local.conn.execute("PRAGMA synchronous=NORMAL")
+            # Auto-init schema on first connect so VectorStore() works without
+            # a preceding .load() call (e.g. in-memory use in tests).
+            # Pass conn directly to avoid re-acquiring the lock (non-reentrant).
+            self._init_db(self._local.conn)
         return self._local.conn
 
-    def _init_db(self):
-        with self._lock:
-            conn = self._get_conn()
-            conn.execute('''CREATE TABLE IF NOT EXISTS documents (
-                doc_id TEXT PRIMARY KEY,
-                text TEXT,
-                metadata TEXT,
-                total_tokens INTEGER,
-                embedding TEXT
-            )''')
-            conn.execute('''CREATE TABLE IF NOT EXISTS inverted_index (
-                term TEXT,
-                doc_id TEXT,
-                tf REAL,
-                PRIMARY KEY (term, doc_id),
-                FOREIGN KEY(doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE
-            )''')
-            conn.execute('''CREATE TABLE IF NOT EXISTS global_term_df (
-                term TEXT PRIMARY KEY,
-                doc_count INTEGER
-            )''')
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_inv_doc ON inverted_index(doc_id)")
-            conn.commit()
+    def _init_db(self, conn=None):
+        """Create schema tables if they don't exist yet.
+
+        Accepts an explicit *conn* so it can be called from _get_conn without
+        re-entering _get_conn (which would recurse) or re-acquiring _lock
+        (which would deadlock, since Lock is non-reentrant).
+        """
+        if conn is None:
+            with self._lock:
+                conn = self._get_conn()
+        conn.execute('''CREATE TABLE IF NOT EXISTS documents (
+            doc_id TEXT PRIMARY KEY,
+            text TEXT,
+            metadata TEXT,
+            total_tokens INTEGER,
+            embedding TEXT
+        )''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS inverted_index (
+            term TEXT,
+            doc_id TEXT,
+            tf REAL,
+            PRIMARY KEY (term, doc_id),
+            FOREIGN KEY(doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE
+        )''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS global_term_df (
+            term TEXT PRIMARY KEY,
+            doc_count INTEGER
+        )''')
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_inv_doc ON inverted_index(doc_id)")
+        conn.commit()
 
     def load(self, path):
         """Initialize connection to the SQLite database."""
@@ -119,7 +130,8 @@ class VectorStore:
         with self._lock:
             self._db_path = path
             os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
-            self._init_db()
+            conn = self._get_conn()
+            self._init_db(conn)
         return True
 
     def save(self, path):
