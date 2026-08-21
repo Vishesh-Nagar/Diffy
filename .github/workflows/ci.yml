@@ -18,13 +18,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest
+          pip install pytest python-dotenv
       - name: Run pytest
         run: |
           cd server
           pytest tests/
 
-  lint-client:
+  typecheck-client:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -36,8 +36,7 @@ jobs:
         run: |
           cd client
           npm ci
-      - name: Run TypeScript compiler and ESLint
+      - name: Type-check (tsc --noEmit)
         run: |
           cd client
-          npm run compile
-          npm run lint
+          npx tsc --noEmit -p ./

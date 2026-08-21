@@ -16,7 +16,7 @@ Diffy indexes your repository's commit diffs and live workspace files, builds a 
 - **AI Code Review** — Run an AI review of your last N commits with full Markdown output
 - **Event-driven auto-indexing** — Detects new commits via VS Code Git API, git hooks, and GitHub webhooks
 - **Multi-provider LLM** — Uses Ollama locally, or set an API key for OpenAI, Anthropic, or Gemini
-- **Zero mandatory pip dependencies** — Core Python server uses only the standard library
+- **Zero mandatory pip dependencies** — Core Python server uses only the standard library; `python-dotenv` and `mcp` are optional extras
 
 ## Prerequisites
 
@@ -61,11 +61,17 @@ python -m venv .venv
 # macOS / Linux:
 source .venv/bin/activate
 
-# Install the only required dependency (python-dotenv for .env support)
+# Optional: install python-dotenv for .env file support
 pip install python-dotenv
+
+# Optional: install mcp for MCP server support
+pip install mcp
+
+# Or install everything at once from the server directory
+# pip install -e "server/[all]"
 ```
 
-> **Note:** `python-dotenv` is the only required package. The rest of the server uses Python's standard library.
+> **Note:** No pip packages are strictly required. The core server works with Python's standard library alone. `python-dotenv` unlocks `.env` file loading; `mcp` enables the optional MCP server.
 
 ### 3. Configure environment (optional)
 
@@ -196,7 +202,7 @@ VS Code Extension (TypeScript)
     ├── showDiff.ts           Native VS Code diff viewer (diffy-git: URI scheme)
     └── reviewCommit.ts       AI code review panel with Markdown rendering
 
-Python Server (stdlib + python-dotenv)
+Python Server (stdlib + optional extras)
 ├── main.py                   JSON-RPC dispatcher (stdin/stdout)
 ├── rag_pipeline.py           RAG orchestrator: index, retrieve, query, review
 ├── vectorstore.py            Hybrid TF-IDF + cosine similarity (SQLite)
@@ -204,6 +210,7 @@ Python Server (stdlib + python-dotenv)
 ├── llm_client.py             Unified LLM: Ollama / OpenAI / Anthropic / Gemini
 ├── ollama_client.py          Ollama HTTP client with streaming + embeddings
 ├── webhook_server.py         GitHub webhook receiver (HTTP server)
+├── mcp_server.py             Optional MCP server (query / retrieve / review_commits)
 └── config.py                 Config: env vars, .env file, config.json
 ```
 
@@ -230,6 +237,77 @@ Python Server (stdlib + python-dotenv)
 **Decorations not appearing** — The file may be untracked or git blame failed.
 - The provider only activates after a file save.
 - Untracked (new) files have no git history — this is expected.
+
+---
+
+## MCP Server
+
+Diffy ships an optional [Model Context Protocol](https://modelcontextprotocol.io/) server (`server/mcp_server.py`) that exposes its RAG index as MCP tools. This lets AI assistants like **Claude Desktop**, **Cursor**, and **Claude Code** query your codebase directly.
+
+### Tools exposed
+
+| Tool | Description |
+|---|---|
+| `query(question)` | Ask a natural-language question; returns an LLM answer grounded in your diff history |
+| `retrieve(question, top_k)` | Return the top-k raw diff chunks (JSON) without calling the LLM |
+| `review_commits(repo_path, num_commits)` | Run a full AI code review over the last N commits; returns Markdown |
+
+### Installation
+
+The MCP server is an **optional** component — the VS Code extension does not require it. Install only what you need:
+
+```bash
+# MCP server only
+pip install "diffy-backend[mcp]"
+
+# python-dotenv only (.env file support)
+pip install "diffy-backend[dotenv]"
+
+# Everything
+pip install "diffy-backend[all]"
+```
+
+Or install from source:
+
+```bash
+cd server
+pip install -e ".[mcp]"
+```
+
+### Connecting Claude Desktop
+
+Add the following to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+
+```json
+{
+  "mcpServers": {
+    "diffy": {
+      "command": "python",
+      "args": ["/absolute/path/to/diffy/server/mcp_server.py"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop. The `query`, `retrieve`, and `review_commits` tools will appear automatically.
+
+### Connecting Cursor
+
+In Cursor settings → **MCP**, add a new server:
+
+```json
+{
+  "name": "diffy",
+  "command": "python",
+  "args": ["/absolute/path/to/diffy/server/mcp_server.py"]
+}
+```
+
+### Connecting Claude Code (CLI)
+
+```bash
+claude mcp add diffy python /absolute/path/to/diffy/server/mcp_server.py
+```
 
 ---
 

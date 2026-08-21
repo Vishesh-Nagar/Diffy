@@ -13,7 +13,15 @@ import os
 import json
 import urllib.parse
 
-from dotenv import load_dotenv as _load_dotenv
+try:
+    from dotenv import load_dotenv as _load_dotenv
+except ImportError:
+    # python-dotenv is an optional convenience dependency. Without it, .env
+    # files simply aren't auto-loaded; environment variables and config.json
+    # still work, keeping the core server usable with only the standard
+    # library (see the "zero mandatory pip dependencies" note in the README).
+    def _load_dotenv(*_args, **_kwargs):
+        return False
 
 # Default configuration
 DEFAULTS = {

@@ -297,7 +297,11 @@ export class CommitDetector {
         }
 
         this._hookRestoreMap.delete(repoPath);
-        this.context.globalState.update(`diffy.hookConsent.${repoPath}`, undefined);
+        // NOTE: hook consent is intentionally NOT cleared here. restoreGitHooks()
+        // runs on every deactivate() (i.e. normal shutdown), so wiping consent
+        // would re-prompt the user every session. Consent means "the user permits
+        // hooks" and should persist across sessions; uninstalling the extension
+        // clears its globalState automatically.
     }
 
     // ---------------------------------------------------------------

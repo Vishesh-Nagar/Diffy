@@ -7,7 +7,12 @@ name = "diffy-backend"
 version = "1.0.0"
 description = "Backend for the Diffy VS Code Extension (Local Git-Diff RAG)"
 requires-python = ">=3.10"
-dependencies = [
-    "python-dotenv>=1.0.0",
-    "mcp",
-]
+dependencies = []
+
+[project.optional-dependencies]
+# Convenience: auto-load .env files (not required — env vars and config.json work without it)
+dotenv = ["python-dotenv>=1.0.0"]
+# MCP server support (not required by the VS Code extension)
+mcp = ["mcp"]
+# Install everything
+all = ["python-dotenv>=1.0.0", "mcp"]
